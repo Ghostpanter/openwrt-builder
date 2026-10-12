@@ -1,0 +1,148 @@
+name: Build OpenWrt
+
+on:
+  # 定时自动检查上游：取消下面两行注释即可开启（UTC 19:00 = 香港时间每天凌晨 3:00）
+  # schedule:
+  #   - cron: "0 19 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "上游没更新也强制编译（首次运行请勾选）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  REPO_URL: https://github.com/immortalwrt/immortalwrt.git
+  REPO_BRANCH: master
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.cmp.outputs.changed }}
+      commit: ${{ steps.cmp.outputs.commit }}
+    steps:
+      - name: 对比上游提交与最新 Release
+        id: cmp
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          COMMIT=$(git ls-remote "$REPO_URL" "refs/heads/$REPO_BRANCH" | cut -c1-12)
+          if [ -z "$COMMIT" ]; then
+            echo "无法获取上游提交"; exit 1
+          fi
+          LAST=$(gh release list --repo "${{ github.repository }}" --limit 1 \
+            --json tagName -q '.[0].tagName // ""' 2>/dev/null | sed 's/^build-//' || true)
+          echo "上游: $COMMIT  上次编译: ${LAST:-无}"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          if [ "$COMMIT" != "$LAST" ] || [ "$FORCE" = "true" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [x86_64, athena]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 清理磁盘
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib \
+            g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev \
+            libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev \
+            libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano \
+            ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
+            python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
+            upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+          df -h
+
+      - name: 拉取上游源码
+        run: |
+          git clone --depth 1 -b "$REPO_BRANCH" "$REPO_URL" openwrt
+          if [ -d files ]; then cp -r files openwrt/files; fi
+
+      - name: 缓存下载包和 ccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            openwrt/dl
+            openwrt/.ccache
+          key: ${{ matrix.device }}-${{ needs.check.outputs.commit }}
+          restore-keys: ${{ matrix.device }}-
+
+      - name: 更新 feeds 并载入配置
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          cp ../configs/${{ matrix.device }}.config .config
+          make defconfig
+
+      - name: 下载源码包
+        working-directory: openwrt
+        run: make download -j8
+
+      - name: 编译
+        working-directory: openwrt
+        run: |
+          make -j$(nproc) || make -j1 V=s
+
+      - name: 整理产物
+        run: |
+          mkdir -p out
+          find openwrt/bin/targets -type f \( -name '*.img.gz' -o -name '*.bin' -o -name '*.itb' \
+            -o -name '*.ubi' -o -name 'sha256sums' -o -name '*.manifest' \) -exec cp {} out/ \;
+          ls -lh out
+          df -h
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.device }}
+          path: out/
+
+  release:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: fw
+
+      - name: 避免同名文件冲突
+        run: |
+          for d in fw/*/; do
+            dev=$(basename "$d")
+            [ -f "$d/sha256sums" ] && mv "$d/sha256sums" "$d/sha256sums-$dev"
+          done
+          ls -lR fw
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ needs.check.outputs.commit }}
+          name: ImmortalWrt ${{ needs.check.outputs.commit }}
+          body: "上游 immortalwrt/${{ env.REPO_BRANCH }} 提交 ${{ needs.check.outputs.commit }}，包含 x86_64 和 京东云雅典娜（jdcloud_re-ss-01）。"
+          files: fw/**/*
