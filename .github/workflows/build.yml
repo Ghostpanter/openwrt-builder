@@ -14,32 +14,46 @@ on:
 permissions:
   contents: write
 
-env:
-  REPO_URL: https://github.com/immortalwrt/immortalwrt.git
-  REPO_BRANCH: master
-
 jobs:
   check:
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.cmp.outputs.changed }}
-      commit: ${{ steps.cmp.outputs.commit }}
+      immortal_sha: ${{ steps.cmp.outputs.immortal_sha }}
+      libwrt_sha: ${{ steps.cmp.outputs.libwrt_sha }}
+      tag: ${{ steps.cmp.outputs.tag }}
     steps:
-      - name: 对比上游提交与最新 Release
+      - name: 对比双上游提交与最新 Release
         id: cmp
         env:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force }}
         run: |
-          COMMIT=$(git ls-remote "$REPO_URL" "refs/heads/$REPO_BRANCH" | cut -c1-12)
-          if [ -z "$COMMIT" ]; then
-            echo "无法获取上游提交"; exit 1
+          IMMORTAL_URL="https://github.com/immortalwrt/immortalwrt.git"
+          IMMORTAL_BRANCH="master"
+          LIBWRT_URL="https://github.com/LiBwrt/LibWrt.git"
+          LIBWRT_BRANCH="25.12-nss"
+
+          IMM=$(git ls-remote "$IMMORTAL_URL" "refs/heads/$IMMORTAL_BRANCH" | cut -c1-12)
+          LIB=$(git ls-remote "$LIBWRT_URL" "refs/heads/$LIBWRT_BRANCH" | cut -c1-12)
+          if [ -z "$IMM" ] || [ -z "$LIB" ]; then
+            echo "无法获取上游提交 ImmortalWrt=$IMM LibWrt=$LIB"
+            exit 1
           fi
+
+          TAG="build-${IMM}-${LIB}"
           LAST=$(gh release list --repo "${{ github.repository }}" --limit 1 \
-            --json tagName -q '.[0].tagName // ""' 2>/dev/null | sed 's/^build-//' || true)
-          echo "上游: $COMMIT  上次编译: ${LAST:-无}"
-          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
-          if [ "$COMMIT" != "$LAST" ] || [ "$FORCE" = "true" ]; then
+            --json tagName -q '.[0].tagName // ""' 2>/dev/null || true)
+
+          echo "ImmortalWrt master: $IMM"
+          echo "LibWrt 25.12-nss:   $LIB"
+          echo "本次 tag: $TAG  上次 Release: ${LAST:-无}"
+
+          echo "immortal_sha=$IMM" >> "$GITHUB_OUTPUT"
+          echo "libwrt_sha=$LIB" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          if [ "$FORCE" = "true" ] || [ "$TAG" != "$LAST" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -52,7 +66,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        device: [x86_64, athena]
+        include:
+          - device: x86_64
+            repo_url: https://github.com/immortalwrt/immortalwrt.git
+            repo_branch: master
+            config: x86_64.config
+          - device: athena
+            repo_url: https://github.com/LiBwrt/LibWrt.git
+            repo_branch: 25.12-nss
+            config: athena.config
     steps:
       - uses: actions/checkout@v4
 
@@ -82,7 +104,8 @@ jobs:
 
       - name: 拉取上游源码
         run: |
-          git clone --depth 1 -b "$REPO_BRANCH" "$REPO_URL" openwrt
+          echo "克隆 ${{ matrix.repo_url }} 分支 ${{ matrix.repo_branch }} (${{ matrix.device }})"
+          git clone --depth 1 -b "${{ matrix.repo_branch }}" "${{ matrix.repo_url }}" openwrt
           if [ -d files ]; then cp -r files openwrt/files; fi
 
       - name: 缓存下载包和 ccache
@@ -91,7 +114,7 @@ jobs:
           path: |
             openwrt/dl
             openwrt/.ccache
-          key: ${{ matrix.device }}-${{ needs.check.outputs.commit }}
+          key: ${{ matrix.device }}-${{ needs.check.outputs.immortal_sha }}-${{ needs.check.outputs.libwrt_sha }}
           restore-keys: ${{ matrix.device }}-
 
       - name: 更新 feeds 并载入配置
@@ -99,7 +122,7 @@ jobs:
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          cp ../configs/${{ matrix.device }}.config .config
+          cp ../configs/${{ matrix.config }} .config
           make defconfig
 
       - name: 下载源码包
@@ -142,7 +165,11 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ needs.check.outputs.commit }}
-          name: ImmortalWrt ${{ needs.check.outputs.commit }}
-          body: "上游 immortalwrt/${{ env.REPO_BRANCH }} 提交 ${{ needs.check.outputs.commit }}，包含 x86_64 和 京东云雅典娜（jdcloud_re-ss-01）。"
+          tag_name: ${{ needs.check.outputs.tag }}
+          name: x86 ImmortalWrt ${{ needs.check.outputs.immortal_sha }} / 雅典娜 LibWrt ${{ needs.check.outputs.libwrt_sha }}
+          body: |
+            双上游编译产物：
+            - **x86_64**：ImmortalWrt `master` @ `${{ needs.check.outputs.immortal_sha }}`
+            - **雅典娜**：LibWrt `25.12-nss` @ `${{ needs.check.outputs.libwrt_sha }}`（IPQ60xx 满血 NSS）
+            - 机型：`jdcloud_re-ss-01`
           files: fw/**/*
