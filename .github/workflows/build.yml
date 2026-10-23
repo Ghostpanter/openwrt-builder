@@ -75,6 +75,10 @@ jobs:
             repo_url: https://github.com/LiBwrt/LibWrt.git
             repo_branch: 25.12-nss
             config: athena.config
+          - device: arthur
+            repo_url: https://github.com/LiBwrt/LibWrt.git
+            repo_branch: 25.12-nss
+            config: arthur.config
     steps:
       - uses: actions/checkout@v4
 
@@ -155,21 +159,31 @@ jobs:
         with:
           path: fw
 
-      - name: 避免同名文件冲突
+      - name: 检查三个机型产物并避免同名文件冲突
         run: |
+          for dev in x86_64 athena arthur; do
+            if [ ! -d "fw/$dev" ] || [ -z "$(ls -A "fw/$dev")" ]; then
+              echo "缺少 $dev 的产物"
+              exit 1
+            fi
+          done
           for d in fw/*/; do
             dev=$(basename "$d")
-            [ -f "$d/sha256sums" ] && mv "$d/sha256sums" "$d/sha256sums-$dev"
+            if [ -f "$d/sha256sums" ]; then
+              mv "$d/sha256sums" "$d/sha256sums-$dev"
+            fi
           done
           ls -lR fw
 
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.check.outputs.tag }}
-          name: x86 ImmortalWrt ${{ needs.check.outputs.immortal_sha }} / 雅典娜 LibWrt ${{ needs.check.outputs.libwrt_sha }}
+          name: x86 ImmortalWrt ${{ needs.check.outputs.immortal_sha }} / 雅典娜+亚瑟 LibWrt ${{ needs.check.outputs.libwrt_sha }}
           body: |
             双上游编译产物：
             - **x86_64**：ImmortalWrt `master` @ `${{ needs.check.outputs.immortal_sha }}`
-            - **雅典娜**：LibWrt `25.12-nss` @ `${{ needs.check.outputs.libwrt_sha }}`（IPQ60xx 满血 NSS）
-            - 机型：`jdcloud_re-ss-01`
+            - **雅典娜 AX6600**（`jdcloud_re-cs-02`）：LibWrt `25.12-nss` @ `${{ needs.check.outputs.libwrt_sha }}`（满血 NSS）
+            - **亚瑟 AX1800 Pro**（`jdcloud_re-ss-01`）：LibWrt `25.12-nss` @ `${{ needs.check.outputs.libwrt_sha }}`（满血 NSS）
+            - 文件名里带 device id，刷机前务必核对型号；校验文件为 `sha256sums-<机型>`
           files: fw/**/*
+          fail_on_unmatched_files: true
