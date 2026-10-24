@@ -216,13 +216,12 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | DDNS / 穿透 | `luci-app-ddns` | 动态域名（官方 ddns-scripts） | ImmortalWrt luci |
 | DDNS / 穿透 | `luci-app-frps` | FRP 服务端 | ImmortalWrt luci |
 | DNS | `luci-app-https-dns-proxy` | DoH 代理（默认关闭） | ImmortalWrt luci |
-| DNS | `luci-app-unbound` | Unbound 递归 DNS（默认关闭，端口 5335） | ImmortalWrt luci |
+| DNS | `luci-app-unbound` | Unbound 递归 DNS（默认关闭，端口 5334） | ImmortalWrt luci |
 | 流量控制 | `luci-app-qosify` | qosify（eBPF DSCP 标记 + cake） | ImmortalWrt luci |
 | 流量控制 | `luci-app-syncdial` | 多线多拨（依赖 mwan3 + macvlan，界面自带中文） | ImmortalWrt luci |
 | 网络工具 | `luci-app-arpbind` | IP / MAC 绑定 | ImmortalWrt luci |
 | 代理 | `luci-app-gost` `luci-app-microsocks` | GOST 隧道 / 轻量 SOCKS5 服务端 | ImmortalWrt luci |
 | IPTV | `luci-app-rtp2httpd` | IPTV 组播 / RTSP 转 HTTP | ImmortalWrt luci |
-| 多媒体 | `luci-app-airplay2` | AirPlay 2 音频接收（shairport-sync，需要 USB 声卡等输出设备） | ImmortalWrt luci |
 | 物联网 | `luci-app-mosquitto` | MQTT 服务器 | ImmortalWrt luci |
 | 安全 | `luci-app-crowdsec-firewall-bouncer` | CrowdSec 防火墙封禁端（只有 bouncer，不含引擎） | ImmortalWrt luci |
 | 监控 | `luci-app-snmpd` `luci-app-lldpd` | SNMP（默认关闭）/ LLDP 邻居发现 | ImmortalWrt luci |
@@ -237,35 +236,42 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 - **daed**：要求内核带 BTF，所以 x86_64 打开了 `CONFIG_KERNEL_DEBUG_INFO_BTF`（连带完整内核调试信息），eBPF 程序用 workflow 已装的宿主机 clang/llvm 编译（`CONFIG_BPF_TOOLCHAIN_HOST`）。代价：内核编译更慢、占用编译机更多磁盘，内核镜像大几 MB（内核分区 32 MB，够用）。daed 和 OpenClash / PassWall / HomeProxy 一样，同一时间只开一个。
 - **应用过滤（OAF）**：ImmortalWrt 默认开着软件 / 硬件流量卸载（`flow_offloading`），OAF 要关掉才能识别应用，插件页面里有一键关闭的按钮；做旁路由时，只有网关指向本机的设备才会被过滤。定时控制同理，只管经过本机的设备。
 - **BT 下载**：qBittorrent 网页 8080、Transmission 网页 9091，网页端口不冲突；Transmission 监听 51413，qBittorrent 的监听端口在它自己的设置里改成别的就行，两个同时开注意下载目录分开。
-- **其他默认端口**：Syncthing 8384、Dufs 5000。
+- **其他默认端口**：Syncthing 8384、Dufs 5000（UPnP 自带的 HTTP 端口原来也是 5000，首次开机改成 5100）。
 - **网易云解锁**：依赖 Node.js，编译时要从源码交叉编译 node，整体编译时间会明显变长，固件也会大几十 MB；它的核心程序首次启动时在线下载。
 - **防火墙**：用的是 firewall4（nftables），没有装旧的 firewall（iptables）。Docker、mwan3、strongSwan 依赖 `iptables` 命令，装进来的是走 nftables 的兼容版 `iptables-nft` / `ip6tables-nft`，没有 legacy 版。ImmortalWrt 默认打开 FullCone NAT（`kmod-nft-fullcone`，IPv4 开、IPv6 关）和软件 / 硬件流量卸载（x86 网卡一般不支持硬件卸载，实际只有软件卸载生效）。
 - **广告过滤**：adblock-fast 和 AdGuard Home 选一个用就行。
-- **Unbound**：默认要监听 53 端口，和 dnsmasq 冲突。首次开机脚本 `97-x86-service-defaults` 把它改到 **5335** 端口并关闭；要用就在 LuCI 里打开，再把 dnsmasq（或 MosDNS / AdGuard Home）的上游指向 `127.0.0.1#5335`。
+- **Unbound**：默认要监听 53 端口，和 dnsmasq 冲突。首次开机脚本 `97-x86-service-defaults` 把它改到 **5334** 端口并关闭（MosDNS 默认占 5335，所以不用 5335）；要用就在 LuCI 里打开，再把 dnsmasq（或 MosDNS / AdGuard Home）的上游指向 `127.0.0.1#5334`。
 - **https-dns-proxy**：默认会强制劫持局域网 53 端口并改写 dnsmasq 上游，和 MosDNS / AdGuard Home 打架，所以默认关闭。
 - **CrowdSec**：只装了防火墙封禁端（`crowdsec-firewall-bouncer`），没有 CrowdSec 引擎（太大）。要用得在别的机器（例如 Docker）跑 CrowdSec，再把它的本地 API 地址和 bouncer key 填到插件里；没配之前保持关闭即可。
 - **多拨（syncdial）**：会带上 mwan3 和 macvlan，和 `luci-app-mwan3` 共用 mwan3，规则别重复配。
 - **tc**：选了 `tc-full`，SQM 等依赖的 `tc` 由它提供，`tc-tiny` 自动不再编入。
-- **AirPlay 2**：需要声卡（例如 USB 声卡），没有音频输出设备时装着也不起作用；中文包是 `luci-i18n-airplay2-zh-cn`。
 - **perf / gdb / BTF**：perf 跟内核一起编译，gdb 体积较大；都只是排障工具，不影响日常运行。
 - **UA2F**：靠 nfqueue 改包，开着流量卸载时已建立的连接会绕过它，用之前把流量卸载关掉。
 - **4G/5G 模块**：在「网络 → 接口」新建 ModemManager 协议的接口即可。`uqmi` / `umbim` 只是命令行调试工具。
 - **DNS 插件**：AdGuard Home、MosDNS、SmartDNS 都装了，用哪个就让哪个接上游，注意别抢同一个端口（dnsmasq 占 53）。
+- **冲突检查（x86）**：编译层面没有冲突——选中的包之间没有 CONFLICTS / PROVIDES 撞车，`busybox` 和 `coreutils-*` / `procps-ng-*` / `vim-full` 走 apk 的 alternatives，不会有同路径文件；`dnsmasq-full`、`ip-full`、`tc-full`、`iptables-nft`、`libustream-openssl` 都是唯一的变体。运行时要注意：
+  - DNS：dnsmasq 占 53；AdGuard Home、MosDNS（5335）、SmartDNS、Unbound（5334）、https-dns-proxy 默认都关，开一个当 dnsmasq 上游，别让两个都去抢 53 / 改 dnsmasq。
+  - 代理：OpenClash、PassWall、HomeProxy、Nikki、daed、v2rayA 默认都关，同一时间只开一个（OpenClash 和 Nikki 面板都用 9090）。
+  - QoS：SQM、qosify、eQoS 默认都关，只开一个；开 SQM / qosify / OAF / UA2F 时把流量卸载关掉。
+  - 分流：mwan3（多拨也靠它）和 PBR 都做策略路由，别同时配规则。
+  - DDNS：DDNS（ddns-scripts）、DDNS-GO、Lucky 同一个域名只交给一个更新。
+  - 端口映射：UPnP 和 NATMap 默认都关，可以共存。
+  - Lucky 默认开着（网页 16601），只是网页端，不自动做 DDNS / 转发。
 - **默认行为变化**：
   - BBR：`kmod-tcp-bbr` 自带 `/etc/sysctl.d/12-tcp-bbr.conf`，本机发起的 TCP 默认用 BBR（下载、Docker、qBittorrent 等），转发流量不受影响；默认队列 `fq_codel` 没改成 `fq`，所以不会和 SQM（它自己在接口上设 cake/fq_codel）冲突。
   - irqbalance：包里默认关闭，首次开机脚本 `files/x86_64/etc/uci-defaults/98-enable-irqbalance` 会打开。
   - zram-swap：默认开启，大小是内存的一半；压缩算法由首次开机脚本 `97-zram-zstd` 设成 **zstd**（内核默认算法也改成了 zstd，保留 lzo 兜底；已经手动设过的不动）。可用 `uci set system.@system[0].zram_size_mb=大小` 调整，不想要就 `/etc/init.d/zram disable`。
   - 时间同步：**chrony 接管**。三台共用的首次开机脚本 `files/common/etc/uci-defaults/99-zz-chrony-ntp`（没装 chrony 的固件自动跳过）会：把 chrony 服务器换成 `ntp.tencent.com`、`ntp1.aliyun.com`、`ntp.ntsc.ac.cn`、`cn.ntp.org.cn` + `cn.pool.ntp.org`（只在第一次写入，之后升级不会覆盖你改过的服务器）；把「系统 → 时间同步」里的 busybox NTP 客户端和服务端都关掉并禁用 `sysntpd`；启用 `chronyd`。选这种做法是因为它最稳：不删 busybox 的 ntpd，LuCI 系统页面照常能用，想换回来只要在那里重新勾选并关掉 chronyd。chrony 默认还会给 LAN 提供 NTP 服务（`allow` lan）。
-  - 默认关闭的服务（`97-x86-service-defaults`，每次刷新固件后首次开机都会执行，因为升级不保留服务的自启状态）：unbound（同时改到 5335 端口）、https-dns-proxy、conntrackd（没有主备同步配置时没用）、snmpd（默认团体名是 public，改了再开）。
+  - 默认关闭的服务（`97-x86-service-defaults`，每次刷新固件后首次开机都会执行，因为升级不保留服务的自启状态）：unbound（同时改到 5334 端口）、https-dns-proxy、conntrackd（没有主备同步配置时没用）、snmpd（默认团体名是 public，改了再开）、haproxy 独立服务（示例配置占 8080，和 qBittorrent 冲突；PassWall 自己拉起 HAProxy，不受影响）、frps / frpc（没有启用开关，装上就跑，frpc 默认连本机 frps；配好后去「系统 → 启动项」启用）、softethervpnserver / bridge / client（装上就跑，占 443 / 992 / 1194 / 5555；SoftEther 统一用 LuCI 的 SoftEther VPN 页面开关）。
   - UPnP：装了但默认关闭，要用去「服务 → UPnP」里开。
-- **没装的**：`luci-app-cpufreq`（它依赖的 `cpufreq` 只支持 ARM，x86 由内核 intel_pstate 自动调频）；`kmod-8021q` 不存在，802.1Q VLAN 已经编进内核；`coreutils-full` 不存在，改成按命令选的 `coreutils-*`；`luci-app-cupsd` 在 ImmortalWrt 里不存在，打印只用 p910nd；KVM / qemu-ga、iStore、Intel 无线网卡驱动按要求不装；`luci-app-rustdesk-server`、`luci-app-ocserv`、`luci-app-pppoe-server`、`luci-app-dae`、`luci-app-lxc`、`kmod-crypto-hw-ccp` 按要求不装；`luci-app-syncdial` 没有单独的中文包。
+- **没装的**：`luci-app-cpufreq`（它依赖的 `cpufreq` 只支持 ARM，x86 由内核 intel_pstate 自动调频）；`kmod-8021q` 不存在，802.1Q VLAN 已经编进内核；`coreutils-full` 不存在，改成按命令选的 `coreutils-*`；`luci-app-cupsd` 在 ImmortalWrt 里不存在，打印只用 p910nd；KVM / qemu-ga、iStore、Intel 无线网卡驱动按要求不装；`luci-app-rustdesk-server`、`luci-app-ocserv`、`luci-app-pppoe-server`、`luci-app-dae`、`luci-app-lxc`、`kmod-crypto-hw-ccp` 按要求不装；`luci-app-syncdial` 没有单独的中文包；**AirPlay 2（`luci-app-airplay2` / `shairport-sync`）已移除**：ImmortalWrt 的 shairport-sync 4.3.6 用了新版 FFmpeg 已删掉的 `AVCodec.sample_fmts`，和 FFmpeg 9 编译不过（它带进来的 `audio-support` / `alsa-lib` / `kmod-sound-core` 也一起去掉了，没有别的包用到）。
 - **定时控制**：ImmortalWrt feeds 里没有，用的是 gaobin89 的 JS 版（自动适配 fw4 / nftables），中文翻译直接打包在插件里，没有单独的 `luci-i18n-timecontrol-zh-cn`。
 - **Lucky、EasyTier**：这两个包下载的都是作者 / 官方 GitHub Release 的预编译二进制（不是源码编译）。
 - **首次开机后要自己配置的**：OpenClash 内核和订阅、PassWall 节点、AdGuard Home 初始化、MosDNS 规则、Tailscale 登录、ZeroTier 网络 ID、WireGuard 接口、DDNS-GO / Lucky / frpc、ACME 证书、OpenList 存储、EasyTier / Cloudflare Tunnel、VPN 服务端、SmartDNS、NUT、daed、微信推送、Keepalived、N2N、SoftEther、Syncthing、Transmission、Dufs、v2rayA / Nikki 订阅、NPS 客户端、CIFS 挂载、蜂窝接口、Samba 共享和 SMB 密码、FRP 服务端、DDNS、Unbound / https-dns-proxy（要用时）、CrowdSec 本地 API、MQTT、GOST / microsocks、rtp2httpd。OpenClash、AdGuard Home 等运行时下载的内核和规则都放在根分区，4 GB 足够。
 
 ## 固件内容清单（按层级）
 
-根据 `configs/*.config` 和 `make defconfig` 的结果整理。只列配置里**显式选中**的项；依赖自动带进来的包（例如 `samba4-libs`、`mwan3`、`kmod-wwan` 的下级依赖）不单独列。带中文翻译的插件都同时装了对应的 `luci-i18n-*-zh-cn`（x86 共 90 个中文包）。
+根据 `configs/*.config` 和 `make defconfig` 的结果整理。只列配置里**显式选中**的项；依赖自动带进来的包（例如 `samba4-libs`、`mwan3`、`kmod-wwan` 的下级依赖）不单独列。带中文翻译的插件都同时装了对应的 `luci-i18n-*-zh-cn`（x86 共 89 个中文包）。
 
 ### x86_64（ImmortalWrt master）
 
@@ -285,11 +291,11 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 监控 | `luci-app-netdata` Netdata；`luci-app-statistics` 统计图表；`luci-app-nlbwmon` 按设备流量；`luci-app-vnstat2` vnStat；`luci-app-snmpd` SNMP；`luci-app-lldpd` LLDP；`luci-app-watchcat` 网络看门狗；`luci-app-wechatpush` 微信推送 |
 | IPTV | `luci-app-udpxy` udpxy；`luci-app-msd_lite` msd_lite；`luci-app-omcproxy` 组播代理；`luci-app-rtp2httpd` rtp2httpd |
 | 4G5G | `luci-proto-modemmanager` + `modemmanager` 拨号；`kmod-usb-serial-option` `kmod-usb-acm` `kmod-usb-wdm` USB 串口 / 控制口；`kmod-usb-net-qmi-wwan` `kmod-usb-net-cdc-mbim` `kmod-usb-net-huawei-cdc-ncm` QMI / MBIM / 华为 NCM；`uqmi` `umbim` 命令行；`kmod-wwan` `kmod-mhi-net` `kmod-mhi-wwan-ctrl` `kmod-mtk-t7xx` PCIe 5G 模块；`luci-app-3ginfo-lite` 信号信息；`luci-app-modemband` 锁频段；`luci-app-sms-tool-js` 短信 |
-| 外设 | `usbmuxd` iPhone 连接；`luci-app-p910nd` 网络打印；`luci-app-nut` + `nut-driver-usbhid-ups` UPS；`luci-app-airplay2`（+ `audio-support`）AirPlay 2 音频接收；`luci-app-mosquitto` MQTT 服务器；`luci-app-vlmcsd` KMS 激活 |
+| 外设 | `usbmuxd` iPhone 连接；`luci-app-p910nd` 网络打印；`luci-app-nut` + `nut-driver-usbhid-ups` UPS；`luci-app-mosquitto` MQTT 服务器；`luci-app-vlmcsd` KMS 激活 |
 | Docker | `luci-app-dockerman` 管理界面；`dockerd` `docker` `docker-compose` Docker 本体（Docker 里的应用不集成） |
 | 界面 | `luci-theme-argon` Argon 主题；`LUCI_LANG_zh_Hans` 中文语言；`luci-app-attendedsysupgrade` 在线升级；`luci-app-commands` 自定义命令；`luci-app-autoreboot` 定时重启；`luci-app-irqbalance` 中断均衡；`luci-app-chrony` 时间同步；`luci-app-cpulimit` CPU 限制；`luci-app-ramfree` 释放内存 |
 
-显式不装：`dnsmasq`（被 `dnsmasq-full` 替换）、`kmod-r8169`、`ksmbd-server`、`luci-app-ksmbd`、`luci-i18n-ksmbd-zh-cn`。`make defconfig` 后 x86 共 1152 个包，`tc-tiny` 自动不再选中。
+显式不装：`dnsmasq`（被 `dnsmasq-full` 替换）、`kmod-r8169`、`ksmbd-server`、`luci-app-ksmbd`、`luci-i18n-ksmbd-zh-cn`、`luci-app-airplay2`、`luci-i18n-airplay2-zh-cn`、`shairport-sync-*`。`make defconfig` 后 x86 共 1137 个包，`tc-tiny` 自动不再选中。
 
 ### 雅典娜 AX6600 / 亚瑟 AX1800 Pro（LibWrt 25.12-nss）
 
@@ -318,7 +324,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | FullCone NAT | 开（IPv4） | 开（IPv4） |
 | 流量卸载 | 软件 + 硬件卸载开（x86 实际只有软件卸载生效） | 关（由 NSS ECM 硬件加速） |
 | SMB（Samba 4） | 装好，按需添加共享 | 同左 |
-| 默认关闭 | unbound（改到 5335）、https-dns-proxy、conntrackd、snmpd（`97-x86-service-defaults`）；UPnP；filebrowser；各代理 / 组网插件都要自己配置后才启用 | 无额外服务 |
+| 默认关闭 | unbound（改到 5334）、https-dns-proxy、conntrackd、snmpd、haproxy、frps / frpc、SoftEther 三个独立服务（`97-x86-service-defaults`）；UPnP；filebrowser；各代理 / 组网插件都要自己配置后才启用 | 无额外服务 |
 
 ## 包管理器：apk（不是 opkg）
 
