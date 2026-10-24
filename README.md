@@ -25,10 +25,11 @@
 
 原版 ImmortalWrt 主线对 IPQ60xx **没有满血 NSS**。LibWrt（`25.12-nss`）在 ImmortalWrt 插件生态基础上合入了 NSS 网络卸载（NAT、PPPoE、桥接、Wi‑Fi offload 等）。选中 `ipq60xx` 后，NSS 相关包（`kmod-qca-nss-drv`、`kmod-qca-nss-ecm`、`nss-firmware-ipq60xx`、`kmod-qca-nss-crypto` 等）由上游 `target/linux/qualcommax/Makefile` 和 `ipq60xx/target.mk` 的 `DEFAULT_PACKAGES` 自动带入。
 
-雅典娜和亚瑟的配置只加了少量插件：LuCI 中文、在线升级、Samba 4 网络共享、chrony 时间同步、USB 存储 / ext4 / 挂载点（完整清单见下面「固件内容清单」）。
+雅典娜和亚瑟的配置只加了少量插件：LuCI 中文、在线升级、Samba 4 网络共享、chrony 时间同步、USB 存储 / ext4 / 挂载点、Prometheus 指标导出（完整清单见下面「固件内容清单」）。
 
 - **SMB 也改成了 Samba 4**（不再用 ksmbd）。亚瑟只有 512 MB 内存，smbd 运行时大约占 30–60 MB（传文件时更多），NSS 本身也要预留一部分内存；不用共享时可以在「系统 → 启动项」里把 samba4 停掉。闪存多占约 30–40 MB（未压缩），eMMC 不缺这点空间。
 - **时间同步也由 chrony 接管**，和 x86 用同一个脚本（见 x86 说明里的「时间同步」）。
+- **Prometheus 指标导出**：和 x86 一样用 `prometheus-node-exporter-lua`，默认开启，监听 LAN 的 9100 端口（`http://路由器LAN地址:9100/metrics`）。只选了轻量采集器：基础（CPU / 内存 / 网卡 / 连接跟踪等）+ `nat_traffic` `netstat` `openwrt` `thermal` `uci_dhcp_host` `wifi` `wifi_stations`。它只是一个独立的小 uhttpd 进程（内嵌 Lua，常驻几 MB 内存），被抓取时才采集，亚瑟 512 MB 内存也够；抓取间隔建议 15–30 秒。不用的话在「系统 → 启动项」停掉 `prometheus-node-exporter-lua`。
 
 ## 关于 128G eMMC
 
@@ -117,6 +118,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 监控 | `luci-app-nlbwmon` | 网络带宽监视（按设备统计流量） | ImmortalWrt luci |
 | 监控 | `luci-app-netdata` | Netdata 实时监控 | ImmortalWrt luci |
 | 监控 | `luci-app-statistics` | 实时统计 / 历史图表（collectd） | ImmortalWrt luci |
+| 监控 | `prometheus-node-exporter-lua` + 采集器 `-nat_traffic` `-netstat` `-openwrt` `-thermal` `-hwmon` `-uci_dhcp_host` `-textfile` `-snmp6` `-mwan3` `-filesystem` `-ethtool` | Prometheus 指标导出（LAN 9100 端口，默认开启；lua 版，不装 ucode 版） | ImmortalWrt packages |
 | 网络工具 | `luci-app-wol` | 网络唤醒 | ImmortalWrt luci |
 | 网络工具 | `iperf3-ssl` `tcpdump` `ethtool-full` `mtr-json` | 测速 / 抓包 / 网卡工具 / 路由追踪 | ImmortalWrt 主仓库 / packages |
 | 守护 | `luci-app-watchcat` | 网络看门狗（断网自动重启接口或设备） | ImmortalWrt luci |
@@ -236,7 +238,12 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 - **daed**：要求内核带 BTF，所以 x86_64 打开了 `CONFIG_KERNEL_DEBUG_INFO_BTF`（连带完整内核调试信息），eBPF 程序用 workflow 已装的宿主机 clang/llvm 编译（`CONFIG_BPF_TOOLCHAIN_HOST`）。代价：内核编译更慢、占用编译机更多磁盘，内核镜像大几 MB（内核分区 32 MB，够用）。daed 和 OpenClash / PassWall / HomeProxy 一样，同一时间只开一个。
 - **应用过滤（OAF）**：ImmortalWrt 默认开着软件 / 硬件流量卸载（`flow_offloading`），OAF 要关掉才能识别应用，插件页面里有一键关闭的按钮；做旁路由时，只有网关指向本机的设备才会被过滤。定时控制同理，只管经过本机的设备。
 - **BT 下载**：qBittorrent 网页 8080、Transmission 网页 9091，网页端口不冲突；Transmission 监听 51413，qBittorrent 的监听端口在它自己的设置里改成别的就行，两个同时开注意下载目录分开。
-- **其他默认端口**：Syncthing 8384、Dufs 5000（UPnP 自带的 HTTP 端口原来也是 5000，首次开机改成 5100）。
+- **其他默认端口**：Syncthing 8384、Dufs 5000（UPnP 自带的 HTTP 端口原来也是 5000，首次开机改成 5100）、Prometheus node exporter 9100（p910nd 打印服务默认也是 9100，首次开机把它改成 9101）。
+- **Prometheus / Grafana**：
+  - node exporter：首次开机脚本 `files/common/etc/uci-defaults/96-prometheus-node-exporter`（三台共用）把监听接口从默认的 `loopback` 改成 `lan`、端口 9100，并设为开机自启（只在仍是 `loopback` 时改，之后你改过的不会被覆盖）。抓取地址 `http://路由器LAN地址:9100/metrics`。选的是 lua 版：ImmortalWrt master 里它更新更勤、采集器更全（hwmon、thermal、mwan3、textfile、filesystem、ethtool 都只有 lua 版有）；ucode 版也占 9100，没装。
+  - `textfile` 采集器会读 `/var/prometheus/*.prom`，自己的脚本往里写指标就能一起抓走。
+  - Netdata 也自带 Prometheus 格式输出：`http://路由器LAN地址:19999/api/v1/allmetrics?format=prometheus`（Netdata 默认只允许内网地址访问），两个选一个抓就行，别重复存。
+  - Grafana 面板：node exporter 用社区的 “Node Exporter Full”（ID 1860），OpenWrt 专用指标（Wi‑Fi、DHCP 主机、NAT 连接）可以搜 “OpenWrt” 面板（例如 ID 11147，或更新的 18153）。
 - **网易云解锁**：依赖 Node.js，编译时要从源码交叉编译 node，整体编译时间会明显变长，固件也会大几十 MB；它的核心程序首次启动时在线下载。
 - **防火墙**：用的是 firewall4（nftables），没有装旧的 firewall（iptables）。Docker、mwan3、strongSwan 依赖 `iptables` 命令，装进来的是走 nftables 的兼容版 `iptables-nft` / `ip6tables-nft`，没有 legacy 版。ImmortalWrt 默认打开 FullCone NAT（`kmod-nft-fullcone`，IPv4 开、IPv6 关）和软件 / 硬件流量卸载（x86 网卡一般不支持硬件卸载，实际只有软件卸载生效）。
 - **广告过滤**：adblock-fast 和 AdGuard Home 选一个用就行。
@@ -288,14 +295,14 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 流量控制 | `luci-app-sqm` SQM；`luci-app-qosify` qosify；`luci-app-eqos` 按 IP 限速；`luci-app-mwan3` 多线负载均衡；`luci-app-syncdial` 多拨；`luci-app-pbr` 策略路由；`kmod-sched` `kmod-sched-ctinfo` `kmod-sched-connmark` `kmod-sched-flower` `kmod-sched-act-vlan` `kmod-sched-drr` `kmod-sched-prio` `kmod-sched-mqprio` tc 扩展；`kmod-sched-bpf` + `bpftool-minimal` eBPF 调度；`kmod-netem` 网络损伤模拟；`luci-app-appfilter` 应用过滤；`luci-app-timecontrol` 定时控制；`luci-app-banip` IP 封禁；`luci-app-crowdsec-firewall-bouncer` CrowdSec 封禁端 |
 | 存储与共享 | `luci-app-samba4` + `samba4-server` Samba 4 共享（`ksmbd-server` / `luci-app-ksmbd` 显式不装）；`luci-app-nfs` NFS；`luci-app-vsftpd` FTP；`luci-app-dufs` WebDAV；`luci-app-minidlna` DLNA；`luci-app-cifs-mount` 挂载远程 SMB；`luci-app-rclone` Rclone；`luci-app-openlist` OpenList；`luci-app-syncthing` Syncthing；`luci-app-filebrowser` `filebrowser` `luci-app-filemanager` 文件管理；`luci-app-diskman` 磁盘管理；`luci-app-hd-idle` 硬盘休眠；`parted` `fdisk` `lsblk` 分区；`e2fsprogs` `resize2fs` ext4 工具；`f2fs-tools` F2FS 工具；`xfs-mkfs` XFS 格式化；`ntfs-3g` NTFS（FUSE）；`block-mount` 挂载点；`losetup` 回环设备；`mdadm` 软 RAID；`lvm2` LVM；`smartmontools` 硬盘健康；`hdparm` 硬盘参数；`nvme-cli` NVMe 管理 |
 | 下载 | `luci-app-aria2` Aria2；`luci-app-qbittorrent` qBittorrent；`luci-app-transmission` Transmission |
-| 监控 | `luci-app-netdata` Netdata；`luci-app-statistics` 统计图表；`luci-app-nlbwmon` 按设备流量；`luci-app-vnstat2` vnStat；`luci-app-snmpd` SNMP；`luci-app-lldpd` LLDP；`luci-app-watchcat` 网络看门狗；`luci-app-wechatpush` 微信推送 |
+| 监控 | `luci-app-netdata` Netdata；`prometheus-node-exporter-lua` + 11 个采集器（nat_traffic netstat openwrt thermal hwmon uci_dhcp_host textfile snmp6 mwan3 filesystem ethtool）Prometheus 指标导出；`luci-app-statistics` 统计图表；`luci-app-nlbwmon` 按设备流量；`luci-app-vnstat2` vnStat；`luci-app-snmpd` SNMP；`luci-app-lldpd` LLDP；`luci-app-watchcat` 网络看门狗；`luci-app-wechatpush` 微信推送 |
 | IPTV | `luci-app-udpxy` udpxy；`luci-app-msd_lite` msd_lite；`luci-app-omcproxy` 组播代理；`luci-app-rtp2httpd` rtp2httpd |
 | 4G5G | `luci-proto-modemmanager` + `modemmanager` 拨号；`kmod-usb-serial-option` `kmod-usb-acm` `kmod-usb-wdm` USB 串口 / 控制口；`kmod-usb-net-qmi-wwan` `kmod-usb-net-cdc-mbim` `kmod-usb-net-huawei-cdc-ncm` QMI / MBIM / 华为 NCM；`uqmi` `umbim` 命令行；`kmod-wwan` `kmod-mhi-net` `kmod-mhi-wwan-ctrl` `kmod-mtk-t7xx` PCIe 5G 模块；`luci-app-3ginfo-lite` 信号信息；`luci-app-modemband` 锁频段；`luci-app-sms-tool-js` 短信 |
 | 外设 | `usbmuxd` iPhone 连接；`luci-app-p910nd` 网络打印；`luci-app-nut` + `nut-driver-usbhid-ups` UPS；`luci-app-mosquitto` MQTT 服务器；`luci-app-vlmcsd` KMS 激活 |
 | Docker | `luci-app-dockerman` 管理界面；`dockerd` `docker` `docker-compose` Docker 本体（Docker 里的应用不集成） |
 | 界面 | `luci-theme-argon` Argon 主题；`LUCI_LANG_zh_Hans` 中文语言；`luci-app-attendedsysupgrade` 在线升级；`luci-app-commands` 自定义命令；`luci-app-autoreboot` 定时重启；`luci-app-irqbalance` 中断均衡；`luci-app-chrony` 时间同步；`luci-app-cpulimit` CPU 限制；`luci-app-ramfree` 释放内存 |
 
-显式不装：`dnsmasq`（被 `dnsmasq-full` 替换）、`kmod-r8169`、`ksmbd-server`、`luci-app-ksmbd`、`luci-i18n-ksmbd-zh-cn`、`luci-app-airplay2`、`luci-i18n-airplay2-zh-cn`、`shairport-sync-*`。`make defconfig` 后 x86 共 1137 个包，`tc-tiny` 自动不再选中。
+显式不装：`dnsmasq`（被 `dnsmasq-full` 替换）、`kmod-r8169`、`ksmbd-server`、`luci-app-ksmbd`、`luci-i18n-ksmbd-zh-cn`、`luci-app-airplay2`、`luci-i18n-airplay2-zh-cn`、`shairport-sync-*`、`prometheus-node-exporter-ucode`（用 lua 版）。`make defconfig` 后 x86 共 1152 个包，`tc-tiny` 自动不再选中。
 
 ### 雅典娜 AX6600 / 亚瑟 AX1800 Pro（LibWrt 25.12-nss）
 
@@ -307,10 +314,11 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 内核模块与驱动 | 显式：`kmod-usb-storage` USB 存储、`kmod-fs-ext4` ext4。上游自动带入的 NSS：`kmod-qca-nss-dp` `kmod-qca-nss-drv`（含 bridge-mgr、vlan-mgr、lag-mgr、pppoe、pptp、gre、map-t、vxlanmgr、qdisc、igs、wifi-meshmgr 等子模块）`kmod-qca-nss-ecm` `kmod-qca-nss-crypto` `nss-firmware-ipq60xx`；Wi‑Fi：`kmod-ath11k`（ahb / pci）`ath11k-firmware-ipq6018`、雅典娜另有 `ath11k-firmware-qcn9074`；另外上游默认带 USB 3.0、exFAT / NTFS3 / F2FS / FAT、`kmod-nft-fullcone` |
 | 系统与工具 | 显式：`chrony` 时间同步、`block-mount` 挂载点；上游默认：`default-settings-chn` 国内默认设置、`automount` 自动挂载、`e2fsprogs`、`uboot-envtools`、`wpad-openssl`、`dnsmasq-full`、`firewall4` |
 | 存储与共享 | `luci-app-samba4` Samba 4 网络共享（自动带 `samba4-server` `wsdd2`；`ksmbd-server` / `luci-app-ksmbd` 显式不装） |
+| 监控 | `prometheus-node-exporter-lua` Prometheus 指标导出 + 采集器 `-nat_traffic` `-netstat` `-openwrt` `-thermal` `-uci_dhcp_host` `-wifi` `-wifi_stations`（`prometheus-node-exporter-ucode` 显式不装） |
 | 界面 | `luci` + `luci-i18n-base-zh-cn` LuCI 中文；`luci-app-attendedsysupgrade` 在线升级；`luci-app-chrony` 时间同步；上游默认还带 `luci-app-cpufreq` 调频、`luci-app-package-manager` 软件包、`luci-theme-bootstrap` |
-| 其余层级 | 网络工具、DNS、代理、组网与VPN、远程访问、流量控制、下载、监控、IPTV、4G5G、外设、Docker：都没有额外加，保持上游默认 |
+| 其余层级 | 网络工具、DNS、代理、组网与VPN、远程访问、流量控制、下载、IPTV、4G5G、外设、Docker：都没有额外加，保持上游默认 |
 
-`make defconfig` 后雅典娜 333 个包、亚瑟 332 个包。
+`make defconfig` 后雅典娜 348 个包、亚瑟 347 个包。
 
 ### 默认开启 / 默认关闭
 
@@ -324,6 +332,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | FullCone NAT | 开（IPv4） | 开（IPv4） |
 | 流量卸载 | 软件 + 硬件卸载开（x86 实际只有软件卸载生效） | 关（由 NSS ECM 硬件加速） |
 | SMB（Samba 4） | 装好，按需添加共享 | 同左 |
+| Prometheus node exporter | 开，LAN 9100（`96-prometheus-node-exporter`） | 同左（同一个脚本） |
 | 默认关闭 | unbound（改到 5334）、https-dns-proxy、conntrackd、snmpd、haproxy、frps / frpc、SoftEther 三个独立服务（`97-x86-service-defaults`）；UPnP；filebrowser；各代理 / 组网插件都要自己配置后才启用 | 无额外服务 |
 
 ## 包管理器：apk（不是 opkg）

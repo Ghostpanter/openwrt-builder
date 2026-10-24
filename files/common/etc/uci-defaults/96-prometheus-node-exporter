@@ -1,0 +1,18 @@
+#!/bin/sh
+# Prometheus node exporter（lua 版）：默认只听 loopback，改成监听 LAN 的 9100 端口并开机自启。
+# 只在第一次写入：已经改过监听接口（不是默认的 loopback）就不动，升级不会覆盖你的设置。
+# 没装这个包的固件自动跳过。抓取地址：http://路由器LAN地址:9100/metrics
+[ -f /etc/config/prometheus-node-exporter-lua ] || exit 0
+
+if [ "$(uci -q get prometheus-node-exporter-lua.main.listen_interface)" = "loopback" ] || \
+   [ -z "$(uci -q get prometheus-node-exporter-lua.main.listen_interface)" ]; then
+	uci -q get prometheus-node-exporter-lua.main >/dev/null || \
+		uci set prometheus-node-exporter-lua.main='prometheus-node-exporter-lua'
+	uci set prometheus-node-exporter-lua.main.listen_interface='lan'
+	uci set prometheus-node-exporter-lua.main.listen_port='9100'
+	uci commit prometheus-node-exporter-lua
+fi
+
+[ -x /etc/init.d/prometheus-node-exporter-lua ] && /etc/init.d/prometheus-node-exporter-lua enable
+
+exit 0

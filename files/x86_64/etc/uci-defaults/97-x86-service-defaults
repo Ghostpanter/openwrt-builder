@@ -19,6 +19,13 @@ if [ "$(uci -q get upnpd.config.port)" = "5000" ]; then
 	uci commit upnpd
 fi
 
+# 打印服务 p910nd 的端口是 9100+编号，默认编号 0 = 9100，和 Prometheus node exporter 的 9100 冲突，改成 1（9101）。
+# 只改所有仍是 0 的打印机段，p910nd 本身仍默认关闭。
+for sec in $(uci -q show p910nd | sed -n "s/^p910nd\.\([^.=]*\)=p910nd$/\1/p"); do
+	[ "$(uci -q get p910nd.$sec.port)" = "0" ] && uci set p910nd.$sec.port='1'
+done
+uci -q changes p910nd | grep -q . && uci commit p910nd
+
 # 下面这些装上就会自己启动、又没有总开关（或总开关在别处），默认关掉：
 # https-dns-proxy：默认强制劫持局域网 53 端口并改写 dnsmasq 上游，和 MosDNS / AdGuard Home / SmartDNS 冲突。
 # conntrackd：需要自己写主备同步配置才有用。
