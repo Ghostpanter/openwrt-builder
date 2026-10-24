@@ -47,6 +47,17 @@ git clone --depth 1 https://github.com/nikkinikki-org/OpenWrt-nikki "$TMP/nikki"
 mkdir -p package/extra/nikki
 cp -r "$TMP/nikki/nikki" "$TMP/nikki/mihomo-meta" "$TMP/nikki/luci-app-nikki" package/extra/nikki/
 
+# clash-exporter：OpenClash / Mihomo 的 Prometheus exporter。
+# 源码在 Ghostpanter/clash-exporter，OpenWrt 包装在 openwrt/Makefile。
+# 编译时把 Go 源码放进包目录的 src/，Makefile 从 ./src 取。
+rm -rf "$TMP/clash-exporter" package/extra/clash-exporter
+git clone --depth 1 https://github.com/Ghostpanter/clash-exporter.git "$TMP/clash-exporter"
+mkdir -p package/extra/clash-exporter/src
+cp "$TMP/clash-exporter/openwrt/Makefile" package/extra/clash-exporter/Makefile
+cp -a "$TMP/clash-exporter/openwrt/files" package/extra/clash-exporter/files
+cp "$TMP/clash-exporter/main.go" "$TMP/clash-exporter/go.mod" "$TMP/clash-exporter/go.sum" package/extra/clash-exporter/src/
+cp -a "$TMP/clash-exporter/collector" package/extra/clash-exporter/src/collector
+
 # 删掉了 feeds 里的 mosdns，重建索引，避免 feeds install 时出现重名包
 ./scripts/feeds update -i packages
 
