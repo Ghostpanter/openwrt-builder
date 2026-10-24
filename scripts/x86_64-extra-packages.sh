@@ -1,7 +1,7 @@
 #!/bin/bash
 # x86_64 专用：在 ./scripts/feeds update -a 之后、feeds install -a 之前执行（工作目录为 openwrt 源码根目录）
 # ImmortalWrt 自带的 luci/packages 已经有 OpenClash、PassWall、AdGuard Home、ZeroTier、DiskMan、Docker 等，
-# 这里只补上游没有的两个 LuCI 插件：MosDNS（sbwml）和 Tailscale（asvow）。
+# 这里只补上游没有的：MosDNS（sbwml）、Tailscale（asvow）、Lucky（gdy666）。
 set -euo pipefail
 
 TMP=$(mktemp -d)
@@ -21,6 +21,12 @@ sed -i '/\/etc\/init\.d\/tailscale/d;/\/etc\/config\/tailscale/d;' feeds/package
 rm -rf package/extra/luci-app-tailscale
 git clone --depth 1 https://github.com/asvow/luci-app-tailscale package/extra/luci-app-tailscale
 rm -rf package/extra/luci-app-tailscale/.git
+
+# Lucky：ImmortalWrt feeds 里没有，用 gdy666 官方的 lucky + luci-app-lucky
+# （lucky 包下载的是作者发布的预编译二进制）
+rm -rf "$TMP/lucky" package/extra/lucky package/extra/luci-app-lucky
+git clone --depth 1 https://github.com/gdy666/luci-app-lucky "$TMP/lucky"
+cp -r "$TMP/lucky/lucky" "$TMP/lucky/luci-app-lucky" package/extra/
 
 # 删掉了 feeds 里的 mosdns，重建索引，避免 feeds install 时出现重名包
 ./scripts/feeds update -i packages

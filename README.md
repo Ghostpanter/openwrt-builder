@@ -72,7 +72,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 
 ## x86_64 插件清单（旁路由全功能版）
 
-面向 Intel 3965U / 16G / 64G 旁路由。除 MosDNS、Tailscale 的 LuCI 插件外，全部来自 ImmortalWrt 自带的 `packages` / `luci` feeds；这两个由 `scripts/x86_64-extra-packages.sh` 在编译时拉取（只对 x86_64 生效）。
+面向 Intel 3965U / 16G / 64G 旁路由。除 MosDNS、Tailscale、Lucky 外，全部来自 ImmortalWrt 自带的 `packages` / `luci` feeds；这三个由 `scripts/x86_64-extra-packages.sh` 在编译时拉取（只对 x86_64 生效）。Docker 里的应用（Jellyfin、Home Assistant 等）不集成进固件，刷机后自己在 Docker 里装。
 
 | 分类 | 包名 | 中文名 | 来源 |
 |---|---|---|---|
@@ -106,6 +106,21 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 下载 | `luci-app-qbittorrent` | qBittorrent 下载 | ImmortalWrt luci |
 | 多媒体 / 开发 | `ffmpeg` `ffprobe` | 音视频处理 | ImmortalWrt packages |
 | 多媒体 / 开发 | `python3` `python3-pip` | Python 3 | ImmortalWrt packages |
+| 代理 | `luci-app-homeproxy` | HomeProxy（sing-box，nftables） | ImmortalWrt luci |
+| 监控 | `luci-app-nlbwmon` | 网络带宽监视（按设备统计流量） | ImmortalWrt luci |
+| 监控 | `luci-app-netdata` | Netdata 实时监控 | ImmortalWrt luci |
+| 监控 | `luci-app-statistics` | 实时统计 / 历史图表（collectd） | ImmortalWrt luci |
+| 网络工具 | `luci-app-wol` | 网络唤醒 | ImmortalWrt luci |
+| 网络工具 | `iperf3-ssl` `tcpdump` `ethtool-full` `mtr-json` | 测速 / 抓包 / 网卡工具 / 路由追踪 | ImmortalWrt 主仓库 / packages |
+| 守护 | `luci-app-watchcat` | 网络看门狗（断网自动重启接口或设备） | ImmortalWrt luci |
+| 守护 | `luci-app-autoreboot` | 定时重启 | ImmortalWrt luci |
+| DDNS / 穿透 | `luci-app-ddns-go` | DDNS-GO 动态域名 | ImmortalWrt luci |
+| DDNS / 穿透 | `luci-app-frpc` | FRP 内网穿透客户端 | ImmortalWrt luci |
+| DDNS / 穿透 | `luci-app-lucky`（含 `lucky`） | Lucky（DDNS、端口转发、反向代理、STUN 穿透等） | [gdy666/luci-app-lucky](https://github.com/gdy666/luci-app-lucky) |
+| 证书 | `luci-app-acme` | ACME 证书自动申请（acme.sh） | ImmortalWrt luci |
+| 网盘 / 文件 | `luci-app-openlist` | OpenList 网盘挂载（AList 社区分支） | ImmortalWrt luci |
+| 网盘 / 文件 | `luci-app-filebrowser` | LuCI 文件浏览 | ImmortalWrt luci |
+| 网盘 / 文件 | `filebrowser` | Filebrowser 网页文件管理（默认关闭，端口 8989） | ImmortalWrt packages |
 
 带中文翻译的插件都同时选了对应的 `luci-i18n-*-zh-cn`。注意配置里必须有 `CONFIG_LUCI_LANG_zh_Hans=y`，否则 `make defconfig` 会把所有中文包悄悄去掉。workflow 在 `make defconfig` 之后会检查配置里写成 `=y` 的项是否都还在，x86_64 缺了任何一项会直接报错。
 
@@ -113,7 +128,9 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 
 - **SMB 只用 ksmbd**：ksmbd 在内核里跑，占用小、速度快，已经够家用；samba4 和它都要占 445 端口，两个一起装会冲突，所以不装 samba4。
 - **核显**：编进了 i915 驱动和固件，Docker 里的 Jellyfin 等容器可以把 `/dev/dri` 映射进去做硬件转码（容器自带 VAAPI 驱动）。OpenWrt 本身没有 Intel VAAPI 用户态驱动，宿主机上的 `ffmpeg` 只能软解。
-- **首次开机后要自己配置的**：OpenClash 内核和订阅、PassWall 节点、AdGuard Home 初始化、MosDNS 规则、Tailscale 登录、ZeroTier 网络 ID、WireGuard 接口。OpenClash、AdGuard Home 等运行时下载的内核和规则都放在根分区，4 GB 足够。
+- **代理插件**：OpenClash、PassWall、HomeProxy 都装了，但同一时间只开一个，否则透明代理规则会互相打架。
+- **Lucky**：`lucky` 包下载的是作者发布的预编译二进制（不是源码编译）。
+- **首次开机后要自己配置的**：OpenClash 内核和订阅、PassWall 节点、AdGuard Home 初始化、MosDNS 规则、Tailscale 登录、ZeroTier 网络 ID、WireGuard 接口、DDNS-GO / Lucky / frpc、ACME 证书、OpenList 存储。OpenClash、AdGuard Home 等运行时下载的内核和规则都放在根分区，4 GB 足够。
 
 ## 加插件 / 改配置
 
