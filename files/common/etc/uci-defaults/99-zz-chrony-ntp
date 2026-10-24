@@ -1,0 +1,38 @@
+#!/bin/sh
+# 所有机型共用：用 chrony 接管时间同步，关掉 busybox 自带的 sysntpd。
+# 文件名以 99-zz 开头，保证排在默认设置 99-default-settings-chinese 之后执行。
+# 没装 chrony 的固件直接跳过，不做任何改动。
+[ -x /etc/init.d/chronyd ] || exit 0
+
+# 只在第一次写入国内服务器；以后升级保留配置时不会覆盖你自己改过的 chrony 服务器
+if [ "$(uci -q get system.@system[0].owb_chrony_chn)" != "1" ]; then
+	while uci -q delete chrony.@pool[0]; do :; done
+	while uci -q delete chrony.@server[0]; do :; done
+	for host in ntp.tencent.com ntp1.aliyun.com ntp.ntsc.ac.cn cn.ntp.org.cn; do
+		sec="$(uci add chrony server)"
+		uci set chrony."$sec".hostname="$host"
+		uci set chrony."$sec".iburst='yes'
+	done
+	sec="$(uci add chrony pool)"
+	uci set chrony."$sec".hostname='cn.pool.ntp.org'
+	uci set chrony."$sec".iburst='yes'
+	uci set chrony."$sec".maxsources='4'
+	uci commit chrony
+	uci set system.@system[0].owb_chrony_chn='1'
+	uci commit system
+fi
+
+# 关掉 busybox sysntpd（客户端和服务端都关），避免两个程序同时改系统时间、抢 123 端口。
+# busybox 的 ntpd 程序本身保留，LuCI「系统」页面不会出错，想换回来只要在那里重新勾选即可。
+if uci -q get system.ntp >/dev/null; then
+	uci set system.ntp.enabled='0'
+	uci set system.ntp.enable_server='0'
+	uci commit system
+fi
+[ -x /etc/init.d/sysntpd ] && {
+	/etc/init.d/sysntpd stop >/dev/null 2>&1
+	/etc/init.d/sysntpd disable >/dev/null 2>&1
+}
+/etc/init.d/chronyd enable >/dev/null 2>&1
+
+exit 0

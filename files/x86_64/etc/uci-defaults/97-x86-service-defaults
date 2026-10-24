@@ -1,0 +1,25 @@
+#!/bin/sh
+# x86：几个新加的服务默认关闭。每次刷入新固件后的第一次开机都会执行
+# （OpenWrt 升级时不保留服务的开机自启状态），用到的话升级后在 LuCI 里重新打开即可。
+
+# unbound 默认要占 53 端口，会和 dnsmasq 冲突：改到 5335 并默认关闭。
+# 想用的话在 LuCI 里打开，再把 dnsmasq 的上游指向 127.0.0.1#5335。
+if [ -x /etc/init.d/unbound ]; then
+	uci -q get unbound.ub_main >/dev/null && {
+		uci set unbound.ub_main.listen_port='5335'
+		uci commit unbound
+	}
+	/etc/init.d/unbound stop >/dev/null 2>&1
+	/etc/init.d/unbound disable >/dev/null 2>&1
+fi
+
+# https-dns-proxy 默认会强制劫持局域网 53 端口并改写 dnsmasq 上游，和 MosDNS / AdGuard Home 冲突，默认关闭。
+# conntrackd 需要自己写主备同步配置才有用，默认关闭。
+# snmpd 默认团体名是 public，默认关闭，需要时在 LuCI 里改团体名后再打开。
+for svc in https-dns-proxy conntrackd snmpd; do
+	[ -x "/etc/init.d/$svc" ] || continue
+	"/etc/init.d/$svc" stop >/dev/null 2>&1
+	"/etc/init.d/$svc" disable >/dev/null 2>&1
+done
+
+exit 0

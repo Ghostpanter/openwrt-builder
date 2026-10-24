@@ -1,0 +1,7 @@
+#!/bin/sh
+# x86：zram-swap 默认按 lzo 压缩，这里改成 zstd（压缩率更高）。
+# 已经手动设过算法的不动。
+[ -z "$(uci -q get system.@system[0].zram_comp_algo)" ] || exit 0
+uci set system.@system[0].zram_comp_algo='zstd'
+uci commit system
+exit 0
