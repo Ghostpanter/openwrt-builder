@@ -67,6 +67,17 @@
 - 亚瑟：`*-jdcloud_re-ss-01-squashfs-factory.bin` / `*-sysupgrade.bin`
 - 校验：`sha256sums-x86_64`、`sha256sums-athena`、`sha256sums-arthur`；以及 `*.manifest`
 
+## 编译日志怎么看
+
+编译在 ubuntu-24.04 上跑（自带 clang 18；内核 6.18 的 `bpf-headers` 要求 clang ≥ 15，22.04 的 clang 14 不够）。为了让网页上的日志打得开，完整输出不再打到控制台：
+
+- **控制台**：「编译」这一步只显示每个包的进度行（` make[2] -C package/... compile`）和报错行。失败时会自动用 `make -j1 V=s` 重试，然后把这些折叠起来显示：编译失败的包、`logs/` 里的 `error.txt`、第一个报错前后的几十行、详细日志最后 200 行。失败的包也会写在运行页面顶部的 **Summary** 里。
+- **完整日志**：运行页面最底部 **Artifacts** 里的 `logs-<机型>`（成功失败都会上传，保留 14 天），解压后是 `build-logs-<机型>.tar.gz`，里面有：
+  - `build.log`：并行编译的完整输出
+  - `build-verbose.log`：失败后 `make -j1 V=s` 的详细输出（看真正的报错用这个）
+  - `logs/<包路径>/compile.txt`：每个包单独的编译日志（`BUILD_LOG=1`），失败的包目录里有 `error.txt`
+  - `download.log`、`feeds-install.log`、`.config`
+
 ## x86 首次开机自动分区
 
 x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-data-partition`（只打进 x86 固件）：
@@ -236,7 +247,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 - **SMB 改用 Samba 4（三台都是）**：samba4 兼容性最好（权限、macOS 时间机器、Windows 网络发现 wsdd2 都有）。ksmbd 和它都要占 445 端口，所以配置里显式写了 `# CONFIG_PACKAGE_ksmbd-server is not set` / `# CONFIG_PACKAGE_luci-app-ksmbd is not set`，不会被带回来；没有其他包依赖 ksmbd。共享设置在「服务 → 网络共享」，SMB 用户密码用 `smbpasswd -a root` 添加。代价是比 ksmbd 大：闪存多约 30–40 MB（未压缩，`samba4-libs` 占大头），smbd 运行时约 30–60 MB 内存。
 - **核显**：编进了 i915 驱动和固件，Docker 里的 Jellyfin 等容器可以把 `/dev/dri` 映射进去做硬件转码（容器自带 VAAPI 驱动）。OpenWrt 本身没有 Intel VAAPI 用户态驱动，宿主机上的 `ffmpeg` 只能软解。
 - **代理插件**：OpenClash、PassWall、HomeProxy、daed、v2rayA、Nikki 都装了，但同一时间只开一个，否则透明代理规则会互相打架。
-- **daed**：要求内核带 BTF，所以 x86_64 打开了 `CONFIG_KERNEL_DEBUG_INFO_BTF`（连带完整内核调试信息），eBPF 程序用 workflow 已装的宿主机 clang/llvm 编译（`CONFIG_BPF_TOOLCHAIN_HOST`）。代价：内核编译更慢、占用编译机更多磁盘，内核镜像大几 MB（内核分区 32 MB，够用）。daed 和 OpenClash / PassWall / HomeProxy 一样，同一时间只开一个。
+- **daed**：要求内核带 BTF，所以 x86_64 打开了 `CONFIG_KERNEL_DEBUG_INFO_BTF`（连带完整内核调试信息），eBPF 程序用 workflow 已装的宿主机 clang/llvm 编译（`CONFIG_BPF_TOOLCHAIN_HOST`，内核 6.18 要求 clang ≥ 15，所以编译机用 ubuntu-24.04 的 clang 18）。代价：内核编译更慢、占用编译机更多磁盘，内核镜像大几 MB（内核分区 32 MB，够用）。daed 和 OpenClash / PassWall / HomeProxy 一样，同一时间只开一个。
 - **应用过滤（OAF）**：ImmortalWrt 默认开着软件 / 硬件流量卸载（`flow_offloading`），OAF 要关掉才能识别应用，插件页面里有一键关闭的按钮；做旁路由时，只有网关指向本机的设备才会被过滤。定时控制同理，只管经过本机的设备。
 - **BT 下载**：qBittorrent 网页 8080、Transmission 网页 9091，网页端口不冲突；Transmission 监听 51413，qBittorrent 的监听端口在它自己的设置里改成别的就行，两个同时开注意下载目录分开。
 - **其他默认端口**：Syncthing 8384、Dufs 5000（UPnP 自带的 HTTP 端口原来也是 5000，首次开机改成 5100）、Prometheus node exporter 9100（p910nd 打印服务默认也是 9100，首次开机把它改成 9101）。
@@ -246,7 +257,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
   - Netdata 也自带 Prometheus 格式输出：`http://路由器LAN地址:19999/api/v1/allmetrics?format=prometheus`（Netdata 默认只允许内网地址访问），两个选一个抓就行，别重复存。
   - Grafana 面板：node exporter 用社区的 “Node Exporter Full”（ID 1860），OpenWrt 专用指标（Wi‑Fi、DHCP 主机、NAT 连接）可以搜 “OpenWrt” 面板（例如 ID 11147，或更新的 18153）。
   - clash-exporter：只编进 x86_64。开机自启，监听 `0.0.0.0:2112`（防火墙挡住 WAN），抓取地址 `http://路由器LAN地址:2112/metrics`。默认从 OpenClash 的 `cn_port` / `dashboard_password` 连 `127.0.0.1`。按目的地拆流量默认关闭，要开就 `uci set clash-exporter.main.collect_dest='1'`。Grafana 用原来的 Clash dashboard（ID 18530）。雅典娜和亚瑟没装 OpenClash，也没编这个包。另有 `clash_up`（连得上 OpenClash 内核为 1，否则为 0），可以拿来做告警；内核断开时连接数、内存、模式这些指标会清空，不会一直停在旧值。源码固定在 `scripts/x86_64-extra-packages.sh` 里的 `CLASH_EXPORTER_COMMIT`，升级时改这个 SHA。
-- **sing-box**（HomeProxy、PassWall 用）：x86_64 编的是完整版，但去掉了 NaiveProxy 出站（`scripts/x86_64-extra-packages.sh` 把 `SING_BOX_BUILD_NAIVE_OUTBOUND` 改成默认关）。这个功能要把整套 Chromium 网络栈（`libcronet`）编进来，而 `libcronet` 先要编 `gn`，`gn` 现在要求 C++23，GitHub 的 ubuntu-22.04 上 clang 14 编不过，会让整个编译失败。代价只是 sing-box 不能当 NaiveProxy 客户端；QUIC、uTLS、WireGuard、Tailscale、gVisor 等其他功能都在。
+- **sing-box**（HomeProxy、PassWall 用）：x86_64 编的是完整版，但去掉了 NaiveProxy 出站（`scripts/x86_64-extra-packages.sh` 把 `SING_BOX_BUILD_NAIVE_OUTBOUND` 改成默认关）。这个功能要把整套 Chromium 网络栈（`libcronet`）编进来，而 `libcronet` 先要编 `gn`，`gn` 现在要求 C++23，当时 ubuntu-22.04 上的 clang 14 编不过，会让整个编译失败。现在编译机换成 ubuntu-24.04（clang 18），`gn` 应该能编了，但 `libcronet` 是整套 Chromium 网络栈，要多编很久、固件也会大不少，所以仍然关着。代价只是 sing-box 不能当 NaiveProxy 客户端；QUIC、uTLS、WireGuard、Tailscale、gVisor 等其他功能都在。
 - **网易云解锁**：依赖 Node.js，编译时要从源码交叉编译 node，整体编译时间会明显变长，固件也会大几十 MB；它的核心程序首次启动时在线下载。
 - **防火墙**：用的是 firewall4（nftables），没有装旧的 firewall（iptables）。Docker、mwan3、strongSwan 依赖 `iptables` 命令，装进来的是走 nftables 的兼容版 `iptables-nft` / `ip6tables-nft`，没有 legacy 版。ImmortalWrt 默认打开 FullCone NAT（`kmod-nft-fullcone`，IPv4 开、IPv6 关）和软件 / 硬件流量卸载（x86 网卡一般不支持硬件卸载，实际只有软件卸载生效）。
 - **广告过滤**：adblock-fast 和 AdGuard Home 选一个用就行。

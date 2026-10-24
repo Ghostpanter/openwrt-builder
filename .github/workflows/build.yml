@@ -108,7 +108,8 @@ jobs:
   build:
     needs: check
     if: needs.check.outputs.changed == 'true'
-    runs-on: ubuntu-22.04
+    # 24.04 自带 clang 18：内核 6.18 的 bpf-headers 要求 clang >= 15，gn 要求支持 C++23，22.04 的 clang 14 都不行
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.check.outputs.matrix) }}
@@ -128,7 +129,10 @@ jobs:
 
       - name: 安装依赖
         run: |
+          echo "::group::apt 安装编译依赖"
           sudo apt-get update -y
+          # 列表同 ImmortalWrt README（已适配 24.04：libncurses-dev、无 python3-distutils）；
+          # clang / llvm / lld 给 eBPF 程序（daed、qosify 等）用，CONFIG_BPF_TOOLCHAIN_HOST 直接用宿主机的
           sudo apt-get install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
             bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib \
             g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev \
@@ -136,7 +140,21 @@ jobs:
             libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano \
             ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
             python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
-            upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+            upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd python3-setuptools
+          echo "::endgroup::"
+          echo "::group::工具链版本"
+          lsb_release -ds
+          gcc --version | head -1
+          clang --version
+          ld.lld --version
+          llvm-strip --version | head -2
+          echo "::endgroup::"
+          CLANG_MAJOR=$(clang -dumpversion | cut -d. -f1)
+          if [ "$CLANG_MAJOR" -lt 15 ]; then
+            echo "::error::宿主机 clang 版本 $CLANG_MAJOR 太旧，内核 bpf-headers 至少要 15"
+            exit 1
+          fi
+          echo "clang $CLANG_MAJOR，满足 >= 15"
           df -h
 
       - name: 拉取上游源码
@@ -164,12 +182,21 @@ jobs:
       - name: 更新 feeds 并载入配置
         working-directory: openwrt
         run: |
+          echo "::group::feeds update"
           ./scripts/feeds update -a
+          echo "::endgroup::"
           # x86 额外插件（MosDNS、Tailscale 的 LuCI），只对 x86_64 生效，雅典娜/亚瑟不受影响
           if [ "${{ matrix.device }}" = "x86_64" ]; then
+            echo "::group::x86_64 额外插件"
             bash ../scripts/x86_64-extra-packages.sh
+            echo "::endgroup::"
           fi
-          ./scripts/feeds install -a
+          # feeds install -a 会刷几千行，写进文件（随日志一起上传），失败才打印末尾
+          if ! ./scripts/feeds install -a > feeds-install.log 2>&1; then
+            tail -n 100 feeds-install.log
+            exit 1
+          fi
+          echo "feeds install 完成（$(wc -l < feeds-install.log) 行输出，见日志压缩包里的 feeds-install.log）"
           cp ../configs/${{ matrix.config }} .config
           make defconfig
           # 检查配置里写成 =y 的包在 defconfig 后都还在，缺了就直接失败，免得编完才发现少插件
@@ -185,12 +212,78 @@ jobs:
 
       - name: 下载源码包
         working-directory: openwrt
-        run: make download -j8
+        run: |
+          # 输出写进 download.log，控制台只显示失败的包；失败时单线程重试一次
+          if ! make download -j8 > download.log 2>&1; then
+            echo "并行下载有失败，单线程重试："
+            grep -E 'ERROR:' download.log || true
+            if ! make download -j1 V=s > download-verbose.log 2>&1; then
+              echo "::group::下载失败的包"
+              grep -E 'ERROR:|No more mirrors|Download failed' download-verbose.log || true
+              echo "::endgroup::"
+              tail -n 60 download-verbose.log
+              echo "::error::make download 失败，完整日志在 logs-${{ matrix.device }} 产物里"
+              exit 1
+            fi
+          fi
+          echo "下载完成，dl 目录 $(du -sh dl | cut -f1)"
 
       - name: 编译
         working-directory: openwrt
         run: |
-          make -j$(nproc) || make -j1 V=s
+          # 完整输出只进 build.log（随日志产物上传），控制台只留每个包的进度行和报错行，避免网页日志太大打不开。
+          # BUILD_LOG=1：每个包的编译输出另存到 openwrt/logs/<包路径>/compile.txt，失败的包写 error.txt
+          FILTER='^ make\[[0-9]+\] |ERROR:|^make\[[0-9]+\]: \*\*\*|^make: \*\*\*'
+          echo "开始编译：$(nproc) 线程，$(date '+%F %T %Z')"
+          set +e
+          make -j"$(nproc)" BUILD_LOG=1 2>&1 | tee build.log | grep --line-buffered -E "$FILTER"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "编译成功：$(date '+%F %T %Z')"
+            exit 0
+          fi
+
+          echo "::warning::并行编译失败（退出码 $rc），用 make -j1 V=s 重试，详细输出写进 build-verbose.log"
+          set +e
+          make -j1 V=s BUILD_LOG=1 > build-verbose.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "单线程重试成功（并行编译偶发失败）"
+            exit 0
+          fi
+
+          echo "::group::编译失败的包"
+          grep -hE 'ERROR: .* failed to build' build.log build-verbose.log | sort -u || true
+          echo "::endgroup::"
+          echo "::group::logs/ 里的 error.txt"
+          find logs -name error.txt -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; 2>/dev/null || true
+          echo "::endgroup::"
+          # 优先定位第一个 "ERROR: ... failed to build"，往前多给一些行；找不到再找第一个 error: / Error N
+          first=$(grep -nE 'ERROR: .* failed to build' build-verbose.log | head -n 1 | cut -d: -f1)
+          before=80
+          if [ -z "$first" ]; then
+            first=$(grep -nE 'error:|Error [0-9]+' build-verbose.log | head -n 1 | cut -d: -f1)
+            before=30
+          fi
+          if [ -n "$first" ]; then
+            echo "::group::第一个报错前后（build-verbose.log 第 $first 行）"
+            start=$(( first > before ? first - before : 1 ))
+            sed -n "${start},$(( first + 10 ))p" build-verbose.log
+            echo "::endgroup::"
+          fi
+          echo "===== build-verbose.log 最后 200 行 ====="
+          tail -n 200 build-verbose.log
+          {
+            echo "### ${{ matrix.device }} 编译失败"
+            echo '```'
+            grep -hE 'ERROR: .* failed to build' build.log build-verbose.log | sort -u || true
+            echo '```'
+            echo "完整日志：本次运行页面底部 Artifacts 里的 \`logs-${{ matrix.device }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::编译失败，完整日志在 logs-${{ matrix.device }} 产物里"
+          exit 1
 
       - name: 整理产物
         run: |
@@ -205,6 +298,31 @@ jobs:
           name: ${{ matrix.device }}
           path: out/
 
+      - name: 打包编译日志
+        if: always()
+        run: |
+          [ -d openwrt ] || exit 0
+          cd openwrt
+          files=""
+          for f in build.log build-verbose.log download.log download-verbose.log feeds-install.log .config logs; do
+            [ -e "$f" ] && files="$files $f"
+          done
+          if [ -n "$files" ]; then
+            # shellcheck disable=SC2086
+            tar -czf ../build-logs-${{ matrix.device }}.tar.gz $files
+            ls -lh ../build-logs-${{ matrix.device }}.tar.gz
+          fi
+
+      - name: 上传编译日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.device }}
+          path: build-logs-${{ matrix.device }}.tar.gz
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 14
+
   release:
     needs: [check, build]
     runs-on: ubuntu-latest
@@ -215,6 +333,8 @@ jobs:
 
       - name: 检查所选机型产物并避免同名文件冲突
         run: |
+          # 编译日志（logs-<机型>）不放进 Release
+          rm -rf fw/logs-*
           for dev in ${{ needs.check.outputs.devs }}; do
             if [ ! -d "fw/$dev" ] || [ -z "$(ls -A "fw/$dev")" ]; then
               echo "缺少 $dev 的产物"
