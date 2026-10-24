@@ -51,12 +51,29 @@ cp -r "$TMP/nikki/nikki" "$TMP/nikki/mihomo-meta" "$TMP/nikki/luci-app-nikki" pa
 # 源码在 Ghostpanter/clash-exporter，OpenWrt 包装在 openwrt/Makefile。
 # 编译时把 Go 源码放进包目录的 src/，Makefile 从 ./src 取。
 rm -rf "$TMP/clash-exporter" package/extra/clash-exporter
-git clone --depth 1 https://github.com/Ghostpanter/clash-exporter.git "$TMP/clash-exporter"
+# 固定到审查、测试过的提交，避免仓库后续改动直接进固件；升级时改这里的 SHA
+CLASH_EXPORTER_COMMIT=03ac45885000a7d0d4cefd704afc34321fba8c94
+git init -q "$TMP/clash-exporter"
+git -C "$TMP/clash-exporter" fetch -q --depth 1 https://github.com/Ghostpanter/clash-exporter.git "$CLASH_EXPORTER_COMMIT"
+git -C "$TMP/clash-exporter" checkout -q FETCH_HEAD
 mkdir -p package/extra/clash-exporter/src
 cp "$TMP/clash-exporter/openwrt/Makefile" package/extra/clash-exporter/Makefile
 cp -a "$TMP/clash-exporter/openwrt/files" package/extra/clash-exporter/files
 cp "$TMP/clash-exporter/main.go" "$TMP/clash-exporter/go.mod" "$TMP/clash-exporter/go.sum" package/extra/clash-exporter/src/
 cp -a "$TMP/clash-exporter/collector" package/extra/clash-exporter/src/collector
+
+# sing-box：完整版的 NaiveProxy 出站开关是 def_bool y（菜单里关不掉），一开就要编 libcronet（Chromium 网络栈），
+# libcronet 又要先编 gn，gn 现在要求 C++23，GitHub ubuntu-22.04 上默认的 clang 14 不认 -std=c++23，直接编译失败；
+# 而且即使只装 sing-box-tiny，只要这个开关是 y，编 sing-box 时也会先去编 libcronet。
+# 这里把它改成默认关：sing-box 其他功能（HomeProxy / PassWall 用到的 QUIC、uTLS、WireGuard、gVisor 等）不受影响，
+# 只是少了 naive 出站（客户端连 NaiveProxy 服务器）。
+SB_MK=feeds/packages/net/sing-box/Makefile
+if [ -f "$SB_MK" ]; then
+  sed -i '/config SING_BOX_BUILD_NAIVE_OUTBOUND/{n;s/def_bool y/def_bool n/}' "$SB_MK"
+  if grep -A1 'config SING_BOX_BUILD_NAIVE_OUTBOUND' "$SB_MK" | grep -q 'def_bool y'; then
+    echo "警告：没能关掉 sing-box 的 NaiveProxy 出站，libcronet / gn 可能仍会被编译" >&2
+  fi
+fi
 
 # 删掉了 feeds 里的 mosdns，重建索引，避免 feeds install 时出现重名包
 ./scripts/feeds update -i packages
