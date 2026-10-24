@@ -1,7 +1,7 @@
 #!/bin/bash
 # x86_64 专用：在 ./scripts/feeds update -a 之后、feeds install -a 之前执行（工作目录为 openwrt 源码根目录）
 # ImmortalWrt 自带的 luci/packages 已经有 OpenClash、PassWall、AdGuard Home、ZeroTier、DiskMan、Docker 等，
-# 这里只补上游没有的：MosDNS（sbwml）、Tailscale（asvow）、Lucky（gdy666）、EasyTier（EasyTier 官方）。
+# 这里只补上游没有的：MosDNS（sbwml）、Tailscale（asvow）、Lucky（gdy666）、EasyTier（EasyTier 官方）、定时控制（gaobin89）。
 set -euo pipefail
 
 TMP=$(mktemp -d)
@@ -34,6 +34,11 @@ rm -rf "$TMP/easytier" package/extra/easytier
 git clone --depth 1 https://github.com/EasyTier/luci-app-easytier "$TMP/easytier"
 mkdir -p package/extra/easytier
 cp -r "$TMP/easytier/version.mk" "$TMP/easytier/easytier" "$TMP/easytier/luci-app-easytier" package/extra/easytier/
+
+# 定时控制（家长控制，按 MAC + 时段断网）：ImmortalWrt feeds 里没有，用 gaobin89 的 JS 版（支持 fw4/nftables，自带中文翻译）
+rm -rf "$TMP/timecontrol" package/extra/luci-app-timecontrol
+git clone --depth 1 https://github.com/gaobin89/luci-app-timecontrol "$TMP/timecontrol"
+cp -r "$TMP/timecontrol/luci-app-timecontrol" package/extra/
 
 # 删掉了 feeds 里的 mosdns，重建索引，避免 feeds install 时出现重名包
 ./scripts/feeds update -i packages

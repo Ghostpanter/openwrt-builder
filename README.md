@@ -72,7 +72,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 
 ## x86_64 插件清单（旁路由全功能版）
 
-面向 Intel 3965U / 16G / 64G 旁路由。除 MosDNS、Tailscale、Lucky、EasyTier 外，全部来自 ImmortalWrt 自带的 `packages` / `luci` feeds；这四个由 `scripts/x86_64-extra-packages.sh` 在编译时拉取（只对 x86_64 生效）。Docker 里的应用（Jellyfin、Home Assistant 等）不集成进固件，刷机后自己在 Docker 里装。
+面向 Intel 3965U / 16G / 64G 旁路由。除 MosDNS、Tailscale、Lucky、EasyTier、定时控制外，全部来自 ImmortalWrt 自带的 `packages` / `luci` feeds；这五个由 `scripts/x86_64-extra-packages.sh` 在编译时拉取（只对 x86_64 生效）。Docker 里的应用（Jellyfin、Home Assistant 等）不集成进固件，刷机后自己在 Docker 里装。
 
 | 分类 | 包名 | 中文名 | 来源 |
 |---|---|---|---|
@@ -162,6 +162,18 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 存储 / 服务 | `luci-app-p910nd` | 网络打印服务器（打印机直通） | ImmortalWrt luci |
 | 存储 / 服务 | `luci-app-nut` `nut-driver-usbhid-ups` | UPS 管理（NUT，带常见 USB UPS 驱动） | ImmortalWrt luci / packages |
 | 存储 / 服务 | `luci-app-vlmcsd` | KMS 激活服务器 | ImmortalWrt luci |
+| 代理 | `luci-app-daed` | daed（eBPF 透明代理，带网页面板） | ImmortalWrt luci |
+| 家长控制 | `luci-app-appfilter` | 应用过滤（OpenAppFilter） | ImmortalWrt luci |
+| 家长控制 | `luci-app-timecontrol` | 定时控制（按设备 MAC 和时段断网） | gaobin89/luci-app-timecontrol |
+| 通知 / 高可用 | `luci-app-wechatpush` | 微信推送（设备上下线、IP 变化等通知） | ImmortalWrt luci |
+| 通知 / 高可用 | `luci-app-keepalived` | Keepalived（VRRP 主备高可用） | ImmortalWrt luci |
+| 组网 / VPN | `luci-app-n2n` | N2N（P2P 虚拟局域网） | ImmortalWrt luci |
+| 组网 / VPN | `luci-app-softethervpn` | SoftEther VPN 服务器 | ImmortalWrt luci |
+| 组网 / VPN | `luci-app-3cat` `socat` | 端口转发（替代 luci-app-socat）+ socat 命令行 | ImmortalWrt luci / packages |
+| 同步 / 下载 | `luci-app-syncthing` | Syncthing 文件同步 | ImmortalWrt luci |
+| 同步 / 下载 | `luci-app-transmission` | Transmission BT 下载 | ImmortalWrt luci |
+| 同步 / 下载 | `luci-app-dufs` | Dufs 文件服务器（WebDAV） | ImmortalWrt luci |
+| 娱乐 | `luci-app-unblockneteasemusic` | 解锁网易云音乐灰色歌曲 | ImmortalWrt luci |
 
 带中文翻译的插件都同时选了对应的 `luci-i18n-*-zh-cn`。注意配置里必须有 `CONFIG_LUCI_LANG_zh_Hans=y`，否则 `make defconfig` 会把所有中文包悄悄去掉。workflow 在 `make defconfig` 之后会检查配置里写成 `=y` 的项是否都还在，x86_64 缺了任何一项会直接报错。
 
@@ -170,6 +182,11 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 - **SMB 只用 ksmbd**：ksmbd 在内核里跑，占用小、速度快，已经够家用；samba4 和它都要占 445 端口，两个一起装会冲突，所以不装 samba4。
 - **核显**：编进了 i915 驱动和固件，Docker 里的 Jellyfin 等容器可以把 `/dev/dri` 映射进去做硬件转码（容器自带 VAAPI 驱动）。OpenWrt 本身没有 Intel VAAPI 用户态驱动，宿主机上的 `ffmpeg` 只能软解。
 - **代理插件**：OpenClash、PassWall、HomeProxy 都装了，但同一时间只开一个，否则透明代理规则会互相打架。
+- **daed**：要求内核带 BTF，所以 x86_64 打开了 `CONFIG_KERNEL_DEBUG_INFO_BTF`（连带完整内核调试信息），eBPF 程序用 workflow 已装的宿主机 clang/llvm 编译（`CONFIG_BPF_TOOLCHAIN_HOST`）。代价：内核编译更慢、占用编译机更多磁盘，内核镜像大几 MB（内核分区 32 MB，够用）。daed 和 OpenClash / PassWall / HomeProxy 一样，同一时间只开一个。
+- **应用过滤（OAF）**：ImmortalWrt 默认开着软件 / 硬件流量卸载（`flow_offloading`），OAF 要关掉才能识别应用，插件页面里有一键关闭的按钮；做旁路由时，只有网关指向本机的设备才会被过滤。定时控制同理，只管经过本机的设备。
+- **BT 下载**：qBittorrent 网页 8080、Transmission 网页 9091，网页端口不冲突；Transmission 监听 51413，qBittorrent 的监听端口在它自己的设置里改成别的就行，两个同时开注意下载目录分开。
+- **其他默认端口**：Syncthing 8384、Dufs 5000。
+- **网易云解锁**：依赖 Node.js，编译时要从源码交叉编译 node，整体编译时间会明显变长，固件也会大几十 MB；它的核心程序首次启动时在线下载。
 - **DNS 插件**：AdGuard Home、MosDNS、SmartDNS 都装了，用哪个就让哪个接上游，注意别抢同一个端口（dnsmasq 占 53）。
 - **默认行为变化**：
   - BBR：`kmod-tcp-bbr` 自带 `/etc/sysctl.d/12-tcp-bbr.conf`，本机发起的 TCP 默认用 BBR（下载、Docker、qBittorrent 等），转发流量不受影响；默认队列 `fq_codel` 没改成 `fq`，所以不会和 SQM（它自己在接口上设 cake/fq_codel）冲突。
@@ -177,8 +194,29 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
   - zram-swap：默认开启，大小是内存的一半；可用 `uci set system.@system[0].zram_size_mb=大小` 调整，不想要就 `/etc/init.d/zram disable`。
   - UPnP：装了但默认关闭，要用去「服务 → UPnP」里开。
 - **没装的**：`luci-app-cpufreq`（它依赖的 `cpufreq` 只支持 ARM，x86 由内核 intel_pstate 自动调频）；`kmod-8021q` 不存在，802.1Q VLAN 已经编进内核；`coreutils-full` 不存在，改成按命令选的 `coreutils-*`；`luci-app-cupsd` 在 ImmortalWrt 里不存在，打印只用 p910nd；KVM / qemu-ga、iStore、Intel 无线网卡驱动按要求不装。
+- **定时控制**：ImmortalWrt feeds 里没有，用的是 gaobin89 的 JS 版（自动适配 fw4 / nftables），中文翻译直接打包在插件里，没有单独的 `luci-i18n-timecontrol-zh-cn`。
 - **Lucky、EasyTier**：这两个包下载的都是作者 / 官方 GitHub Release 的预编译二进制（不是源码编译）。
-- **首次开机后要自己配置的**：OpenClash 内核和订阅、PassWall 节点、AdGuard Home 初始化、MosDNS 规则、Tailscale 登录、ZeroTier 网络 ID、WireGuard 接口、DDNS-GO / Lucky / frpc、ACME 证书、OpenList 存储、EasyTier / Cloudflare Tunnel、VPN 服务端、SmartDNS、NUT。OpenClash、AdGuard Home 等运行时下载的内核和规则都放在根分区，4 GB 足够。
+- **首次开机后要自己配置的**：OpenClash 内核和订阅、PassWall 节点、AdGuard Home 初始化、MosDNS 规则、Tailscale 登录、ZeroTier 网络 ID、WireGuard 接口、DDNS-GO / Lucky / frpc、ACME 证书、OpenList 存储、EasyTier / Cloudflare Tunnel、VPN 服务端、SmartDNS、NUT、daed、微信推送、Keepalived、N2N、SoftEther、Syncthing、Transmission、Dufs。OpenClash、AdGuard Home 等运行时下载的内核和规则都放在根分区，4 GB 足够。
+
+## 包管理器：apk（不是 opkg）
+
+三个机型都一样：ImmortalWrt master 和 LibWrt 25.12-nss 的 `config/Config-build.in` 里 `CONFIG_USE_APK` 默认就是 `y`，本仓库的配置也没改它，所以固件里是 `apk`，没有 `opkg`。
+
+| 做什么 | 命令 |
+| --- | --- |
+| 更新软件源 | `apk update` |
+| 安装 | `apk add 包名` |
+| 卸载 | `apk del 包名` |
+| 搜索 | `apk search 关键词` |
+| 查看已装 / 包信息 | `apk info` / `apk info 包名` |
+| 升级已装的包 | `apk upgrade` |
+| 装本地 .apk 文件 | `apk add --allow-untrusted ./xxx.apk` |
+
+注意：
+
+- 以前的 `.ipk` 包装不了，第三方插件要找 `.apk` 版本，或者加进配置重新编译固件。
+- LuCI「系统 → 软件包」由 `luci-app-package-manager` 提供（已带中文），可以在网页里搜索、安装、上传 `.apk`。
+- 在线装包要求软件源和固件的内核版本、架构对得上；自己编的固件内核 hash 和官方源不一定一致，`kmod-*` 最好直接编进固件。
 
 ## 加插件 / 改配置
 
