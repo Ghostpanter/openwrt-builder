@@ -132,9 +132,23 @@ jobs:
         working-directory: openwrt
         run: |
           ./scripts/feeds update -a
+          # x86 额外插件（MosDNS、Tailscale 的 LuCI），只对 x86_64 生效，雅典娜/亚瑟不受影响
+          if [ "${{ matrix.device }}" = "x86_64" ]; then
+            bash ../scripts/x86_64-extra-packages.sh
+          fi
           ./scripts/feeds install -a
           cp ../configs/${{ matrix.config }} .config
           make defconfig
+          # 检查配置里写成 =y 的包在 defconfig 后都还在，缺了就直接失败，免得编完才发现少插件
+          missing=$(grep -E '^CONFIG_[A-Za-z0-9_.+-]+=y$' ../configs/${{ matrix.config }} | while read -r l; do grep -qxF "$l" .config || echo "$l"; done)
+          if [ -n "$missing" ]; then
+            echo "以下选项在 make defconfig 后丢失："
+            echo "$missing"
+            # 目前只对 x86_64 严格检查，其他机型只提示
+            if [ "${{ matrix.device }}" = "x86_64" ]; then
+              exit 1
+            fi
+          fi
 
       - name: 下载源码包
         working-directory: openwrt

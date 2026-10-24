@@ -70,13 +70,59 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 
 注意：sysupgrade 升级一般会保留这个分区；用整盘镜像重新写盘会覆盖它。
 
+## x86_64 插件清单（旁路由全功能版）
+
+面向 Intel 3965U / 16G / 64G 旁路由。除 MosDNS、Tailscale 的 LuCI 插件外，全部来自 ImmortalWrt 自带的 `packages` / `luci` feeds；这两个由 `scripts/x86_64-extra-packages.sh` 在编译时拉取（只对 x86_64 生效）。
+
+| 分类 | 包名 | 中文名 | 来源 |
+|---|---|---|---|
+| 系统 | `luci` + `luci-i18n-base-zh-cn` | LuCI 网页界面（简体中文） | ImmortalWrt luci |
+| 系统 | `default-settings-chn` | 国内默认设置（上海时区、国内 NTP 和软件源镜像） | ImmortalWrt 主仓库 |
+| 系统 | `luci-i18n-firewall-zh-cn` | 防火墙（中文） | ImmortalWrt luci |
+| 系统 | `luci-theme-argon` | Argon 主题 | ImmortalWrt luci |
+| 系统 | `luci-app-attendedsysupgrade` | 在线升级 | ImmortalWrt luci |
+| 系统 | `luci-app-ttyd` | 网页终端 | ImmortalWrt luci |
+| 系统 | `htop` `nano` `curl` `wget-ssl` `bash` `openssh-sftp-server` | 常用命令行工具 / SFTP | ImmortalWrt packages |
+| 核显 / CPU | `kmod-drm-i915` | Intel 核显驱动（提供 `/dev/dri`） | ImmortalWrt 主仓库 |
+| 核显 / CPU | `i915-firmware-dmc` `i915-firmware-guc` `i915-firmware-huc` | 核显固件 | ImmortalWrt 主仓库 |
+| 核显 / CPU | `intel-microcode` | Intel CPU 微码 | ImmortalWrt 主仓库 |
+| 磁盘 | `luci-app-diskman` | 磁盘管理 | ImmortalWrt luci |
+| 磁盘 | `parted` `e2fsprogs` `block-mount` `kmod-fs-ext4` `lsblk` | 分区 / 格式化 / 挂载点（首次开机自动分区要用） | ImmortalWrt 主仓库 / packages |
+| 磁盘 | `kmod-usb3` `kmod-usb-storage(-uas)` `kmod-fs-ntfs3` `kmod-fs-exfat` `kmod-fs-vfat` | USB 3.0 存储、NTFS/exFAT/FAT 支持 | ImmortalWrt 主仓库 |
+| DNS | `dnsmasq-full`（替换 `dnsmasq`） | 完整版 DNS/DHCP（OpenClash、PassWall 必需） | ImmortalWrt 主仓库 |
+| DNS | `luci-app-adguardhome` | AdGuard Home 广告过滤 | ImmortalWrt luci |
+| DNS | `luci-app-mosdns`（含 `mosdns` `geo2txt`） | MosDNS 分流 DNS | [sbwml/luci-app-mosdns](https://github.com/sbwml/luci-app-mosdns) `v5` |
+| 代理 | `luci-app-openclash` | OpenClash（nftables 版，界面自带中文） | ImmortalWrt luci |
+| 代理 | `luci-app-passwall` | PassWall（nftables 版；默认带 Xray、sing-box、Haproxy 等） | ImmortalWrt luci |
+| 组网 | `luci-proto-wireguard` `wireguard-tools` `qrencode` | WireGuard（在「网络 → 接口」里添加，可生成二维码） | ImmortalWrt luci / 主仓库 / packages |
+| 组网 | `luci-app-tailscale` | Tailscale 异地组网 | [asvow/luci-app-tailscale](https://github.com/asvow/luci-app-tailscale) |
+| 组网 | `luci-app-zerotier` | ZeroTier 异地组网 | ImmortalWrt luci |
+| 流量 | `luci-app-sqm` | SQM 智能队列 / 限速 | ImmortalWrt luci |
+| 流量 | `luci-app-mwan3` | 多线多拨负载均衡 | ImmortalWrt luci |
+| 共享 | `luci-app-ksmbd` | 网络共享（SMB，只用 ksmbd，不装 samba4） | ImmortalWrt luci |
+| 共享 | `luci-app-nfs` | NFS 共享 | ImmortalWrt luci |
+| Docker | `luci-app-dockerman` `dockerd` `docker` `docker-compose` | Docker 及管理界面 | ImmortalWrt luci / packages |
+| 下载 | `luci-app-aria2` | Aria2 下载 | ImmortalWrt luci |
+| 下载 | `luci-app-qbittorrent` | qBittorrent 下载 | ImmortalWrt luci |
+| 多媒体 / 开发 | `ffmpeg` `ffprobe` | 音视频处理 | ImmortalWrt packages |
+| 多媒体 / 开发 | `python3` `python3-pip` | Python 3 | ImmortalWrt packages |
+
+带中文翻译的插件都同时选了对应的 `luci-i18n-*-zh-cn`。注意配置里必须有 `CONFIG_LUCI_LANG_zh_Hans=y`，否则 `make defconfig` 会把所有中文包悄悄去掉。workflow 在 `make defconfig` 之后会检查配置里写成 `=y` 的项是否都还在，x86_64 缺了任何一项会直接报错。
+
+说明：
+
+- **SMB 只用 ksmbd**：ksmbd 在内核里跑，占用小、速度快，已经够家用；samba4 和它都要占 445 端口，两个一起装会冲突，所以不装 samba4。
+- **核显**：编进了 i915 驱动和固件，Docker 里的 Jellyfin 等容器可以把 `/dev/dri` 映射进去做硬件转码（容器自带 VAAPI 驱动）。OpenWrt 本身没有 Intel VAAPI 用户态驱动，宿主机上的 `ffmpeg` 只能软解。
+- **首次开机后要自己配置的**：OpenClash 内核和订阅、PassWall 节点、AdGuard Home 初始化、MosDNS 规则、Tailscale 登录、ZeroTier 网络 ID、WireGuard 接口。OpenClash、AdGuard Home 等运行时下载的内核和规则都放在根分区，4 GB 足够。
+
 ## 加插件 / 改配置
 
 `configs/*.config` 是 diffconfig，只写需要的选项。
 
 - 加包：`CONFIG_PACKAGE_包名=y`
 - 本地：对对应上游源码 `make menuconfig` → `./scripts/diffconfig.sh`
-- 预置文件：仓库根目录建 `files/`
+- 预置文件：`files/common/` 给所有机型，`files/<机型>/` 只给对应机型
+- x86_64 额外插件源：`scripts/x86_64-extra-packages.sh`
 - 换上游：改 `.github/workflows/build.yml` 里 matrix 的 `repo_url` / `repo_branch`
 
 ## 开启每天自动检查
