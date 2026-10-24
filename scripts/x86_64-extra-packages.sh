@@ -49,3 +49,6 @@ cp -r "$TMP/nikki/nikki" "$TMP/nikki/mihomo-meta" "$TMP/nikki/luci-app-nikki" pa
 
 # 删掉了 feeds 里的 mosdns，重建索引，避免 feeds install 时出现重名包
 ./scripts/feeds update -i packages
+
+# 内核配置补丁：给 DETECT_HUNG_TASK 等选项带出来的新子选项定值，避免编译内核时卡在 "(NEW)" 交互提问
+bash "$(dirname "$0")/x86_64-kernel-fixups.sh"
