@@ -42,6 +42,8 @@
 
 ## 手动触发编译
 
+**选择机型**：Run workflow 时在「要编译的机型」下拉框里选：`all`（三台）、`x86_64`、`athena`（雅典娜）、`arthur`（亚瑟）、`jd`（雅典娜+亚瑟）。只编部分机型时 Release 的 tag 末尾会带上机型名（如 `build-xxx-yyy-x86_64`），不会和三台一起编的版本互相覆盖。
+
 1. 打开仓库 **Actions** → 左侧 **Build OpenWrt**
 2. 点 **Run workflow**
 3. **第一次请勾选 force（上游没更新也强制编译）**

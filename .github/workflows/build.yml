@@ -6,6 +6,16 @@ on:
   #   - cron: "0 19 * * *"
   workflow_dispatch:
     inputs:
+      devices:
+        description: "要编译的机型"
+        type: choice
+        default: all
+        options:
+          - all
+          - x86_64
+          - athena
+          - arthur
+          - jd
       force:
         description: "上游没更新也强制编译（首次运行请勾选）"
         type: boolean
@@ -22,12 +32,15 @@ jobs:
       immortal_sha: ${{ steps.cmp.outputs.immortal_sha }}
       libwrt_sha: ${{ steps.cmp.outputs.libwrt_sha }}
       tag: ${{ steps.cmp.outputs.tag }}
+      matrix: ${{ steps.cmp.outputs.matrix }}
+      devs: ${{ steps.cmp.outputs.devs }}
     steps:
       - name: 对比双上游提交与最新 Release
         id: cmp
         env:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force }}
+          DEVICES: ${{ inputs.devices || 'all' }}
         run: |
           IMMORTAL_URL="https://github.com/immortalwrt/immortalwrt.git"
           IMMORTAL_BRANCH="master"
@@ -41,19 +54,52 @@ jobs:
             exit 1
           fi
 
-          TAG="build-${IMM}-${LIB}"
-          LAST=$(gh release list --repo "${{ github.repository }}" --limit 1 \
-            --json tagName -q '.[0].tagName // ""' 2>/dev/null || true)
+          # 选择机型：all=三台，jd=雅典娜+亚瑟，其余为单台
+          case "$DEVICES" in
+            all)    DEVS="x86_64 athena arthur" ;;
+            jd)     DEVS="athena arthur" ;;
+            x86_64|athena|arthur) DEVS="$DEVICES" ;;
+            *) echo "未知机型选项：$DEVICES"; exit 1 ;;
+          esac
+
+          MATRIX='{"include":['
+          SEP=""
+          for d in $DEVS; do
+            if [ "$d" = "x86_64" ]; then
+              ITEM="{\"device\":\"x86_64\",\"repo_url\":\"$IMMORTAL_URL\",\"repo_branch\":\"$IMMORTAL_BRANCH\",\"config\":\"x86_64.config\"}"
+            else
+              ITEM="{\"device\":\"$d\",\"repo_url\":\"$LIBWRT_URL\",\"repo_branch\":\"$LIBWRT_BRANCH\",\"config\":\"$d.config\"}"
+            fi
+            MATRIX="$MATRIX$SEP$ITEM"
+            SEP=","
+          done
+          MATRIX="$MATRIX]}"
+
+          # 三台一起编用 build-<ImmortalWrt>-<LibWrt>；只编部分机型时 tag 末尾加机型，互不覆盖
+          if [ "$DEVICES" = "all" ]; then
+            TAG="build-${IMM}-${LIB}"
+          else
+            TAG="build-${IMM}-${LIB}-${DEVICES}"
+          fi
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            EXISTS=yes
+          else
+            EXISTS=no
+          fi
 
           echo "ImmortalWrt master: $IMM"
           echo "LibWrt 25.12-nss:   $LIB"
-          echo "本次 tag: $TAG  上次 Release: ${LAST:-无}"
+          echo "本次机型: $DEVS"
+          echo "本次 tag: $TAG  已有同名 Release: $EXISTS"
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "devs=$DEVS" >> "$GITHUB_OUTPUT"
 
           echo "immortal_sha=$IMM" >> "$GITHUB_OUTPUT"
           echo "libwrt_sha=$LIB" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-          if [ "$FORCE" = "true" ] || [ "$TAG" != "$LAST" ]; then
+          if [ "$FORCE" = "true" ] || [ "$EXISTS" = "no" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -65,20 +111,7 @@ jobs:
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - device: x86_64
-            repo_url: https://github.com/immortalwrt/immortalwrt.git
-            repo_branch: master
-            config: x86_64.config
-          - device: athena
-            repo_url: https://github.com/LiBwrt/LibWrt.git
-            repo_branch: 25.12-nss
-            config: athena.config
-          - device: arthur
-            repo_url: https://github.com/LiBwrt/LibWrt.git
-            repo_branch: 25.12-nss
-            config: arthur.config
+      matrix: ${{ fromJSON(needs.check.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -180,9 +213,9 @@ jobs:
         with:
           path: fw
 
-      - name: 检查三个机型产物并避免同名文件冲突
+      - name: 检查所选机型产物并避免同名文件冲突
         run: |
-          for dev in x86_64 athena arthur; do
+          for dev in ${{ needs.check.outputs.devs }}; do
             if [ ! -d "fw/$dev" ] || [ -z "$(ls -A "fw/$dev")" ]; then
               echo "缺少 $dev 的产物"
               exit 1
@@ -199,9 +232,9 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.check.outputs.tag }}
-          name: x86 ImmortalWrt ${{ needs.check.outputs.immortal_sha }} / 雅典娜+亚瑟 LibWrt ${{ needs.check.outputs.libwrt_sha }}
+          name: ${{ needs.check.outputs.devs }} | ImmortalWrt ${{ needs.check.outputs.immortal_sha }} / LibWrt ${{ needs.check.outputs.libwrt_sha }}
           body: |
-            双上游编译产物：
+            本次编译机型：`${{ needs.check.outputs.devs }}`（下面只有本次编译的机型有产物）
             - **x86_64**：ImmortalWrt `master` @ `${{ needs.check.outputs.immortal_sha }}`
             - **雅典娜 AX6600**（`jdcloud_re-cs-02`）：LibWrt `25.12-nss` @ `${{ needs.check.outputs.libwrt_sha }}`（满血 NSS）
             - **亚瑟 AX1800 Pro**（`jdcloud_re-ss-01`）：LibWrt `25.12-nss` @ `${{ needs.check.outputs.libwrt_sha }}`（满血 NSS）
