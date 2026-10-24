@@ -72,7 +72,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 
 ## x86_64 插件清单（旁路由全功能版）
 
-面向 Intel 3965U / 16G / 64G 旁路由。除 MosDNS、Tailscale、Lucky、EasyTier、定时控制外，全部来自 ImmortalWrt 自带的 `packages` / `luci` feeds；这五个由 `scripts/x86_64-extra-packages.sh` 在编译时拉取（只对 x86_64 生效）。Docker 里的应用（Jellyfin、Home Assistant 等）不集成进固件，刷机后自己在 Docker 里装。
+面向 Intel 3965U / 16G / 64G 旁路由。除 MosDNS、Tailscale、Lucky、EasyTier、定时控制、Nikki 外，全部来自 ImmortalWrt 自带的 `packages` / `luci` feeds；这六个由 `scripts/x86_64-extra-packages.sh` 在编译时拉取（只对 x86_64 生效）。Docker 里的应用（Jellyfin、Home Assistant 等）不集成进固件，刷机后自己在 Docker 里装。
 
 | 分类 | 包名 | 中文名 | 来源 |
 |---|---|---|---|
@@ -174,6 +174,14 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 同步 / 下载 | `luci-app-transmission` | Transmission BT 下载 | ImmortalWrt luci |
 | 同步 / 下载 | `luci-app-dufs` | Dufs 文件服务器（WebDAV） | ImmortalWrt luci |
 | 娱乐 | `luci-app-unblockneteasemusic` | 解锁网易云音乐灰色歌曲 | ImmortalWrt luci |
+| 代理 | `luci-app-v2raya` | v2rayA（xray 网页客户端） | ImmortalWrt luci |
+| 代理 | `luci-app-nikki` `mihomo-meta` | Nikki（mihomo 透明代理） | nikkinikki-org/OpenWrt-nikki |
+| 广告过滤 / 防检测 | `luci-app-adblock-fast` | 广告过滤（基于 dnsmasq） | ImmortalWrt luci |
+| 广告过滤 / 防检测 | `luci-app-ua2f` | UA2F（改写 UA，校园网防检测） | ImmortalWrt luci |
+| 组网 / VPN | `luci-app-nps` | NPS 内网穿透客户端（npc） | ImmortalWrt luci |
+| 流量统计 | `luci-app-vnstat2` | vnStat 流量统计（按接口、按月） | ImmortalWrt luci |
+| 存储 / 服务 | `luci-app-cifs-mount` | 挂载远程 SMB/CIFS 共享 | ImmortalWrt luci |
+| 蜂窝网络 | `luci-proto-modemmanager` + USB 模块驱动 | 4G/5G 模块拨号（ModemManager，QMI / MBIM / NCM / 串口） | ImmortalWrt luci / packages |
 
 带中文翻译的插件都同时选了对应的 `luci-i18n-*-zh-cn`。注意配置里必须有 `CONFIG_LUCI_LANG_zh_Hans=y`，否则 `make defconfig` 会把所有中文包悄悄去掉。workflow 在 `make defconfig` 之后会检查配置里写成 `=y` 的项是否都还在，x86_64 缺了任何一项会直接报错。
 
@@ -181,12 +189,16 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 
 - **SMB 只用 ksmbd**：ksmbd 在内核里跑，占用小、速度快，已经够家用；samba4 和它都要占 445 端口，两个一起装会冲突，所以不装 samba4。
 - **核显**：编进了 i915 驱动和固件，Docker 里的 Jellyfin 等容器可以把 `/dev/dri` 映射进去做硬件转码（容器自带 VAAPI 驱动）。OpenWrt 本身没有 Intel VAAPI 用户态驱动，宿主机上的 `ffmpeg` 只能软解。
-- **代理插件**：OpenClash、PassWall、HomeProxy 都装了，但同一时间只开一个，否则透明代理规则会互相打架。
+- **代理插件**：OpenClash、PassWall、HomeProxy、daed、v2rayA、Nikki 都装了，但同一时间只开一个，否则透明代理规则会互相打架。
 - **daed**：要求内核带 BTF，所以 x86_64 打开了 `CONFIG_KERNEL_DEBUG_INFO_BTF`（连带完整内核调试信息），eBPF 程序用 workflow 已装的宿主机 clang/llvm 编译（`CONFIG_BPF_TOOLCHAIN_HOST`）。代价：内核编译更慢、占用编译机更多磁盘，内核镜像大几 MB（内核分区 32 MB，够用）。daed 和 OpenClash / PassWall / HomeProxy 一样，同一时间只开一个。
 - **应用过滤（OAF）**：ImmortalWrt 默认开着软件 / 硬件流量卸载（`flow_offloading`），OAF 要关掉才能识别应用，插件页面里有一键关闭的按钮；做旁路由时，只有网关指向本机的设备才会被过滤。定时控制同理，只管经过本机的设备。
 - **BT 下载**：qBittorrent 网页 8080、Transmission 网页 9091，网页端口不冲突；Transmission 监听 51413，qBittorrent 的监听端口在它自己的设置里改成别的就行，两个同时开注意下载目录分开。
 - **其他默认端口**：Syncthing 8384、Dufs 5000。
 - **网易云解锁**：依赖 Node.js，编译时要从源码交叉编译 node，整体编译时间会明显变长，固件也会大几十 MB；它的核心程序首次启动时在线下载。
+- **防火墙**：用的是 firewall4（nftables），没有装旧的 firewall（iptables）。Docker、mwan3、strongSwan 依赖 `iptables` 命令，装进来的是走 nftables 的兼容版 `iptables-nft` / `ip6tables-nft`，没有 legacy 版。ImmortalWrt 默认打开 FullCone NAT（`kmod-nft-fullcone`，IPv4 开、IPv6 关）和软件 / 硬件流量卸载（x86 网卡一般不支持硬件卸载，实际只有软件卸载生效）。
+- **广告过滤**：adblock-fast 和 AdGuard Home 选一个用就行。
+- **UA2F**：靠 nfqueue 改包，开着流量卸载时已建立的连接会绕过它，用之前把流量卸载关掉。
+- **4G/5G 模块**：在「网络 → 接口」新建 ModemManager 协议的接口即可。`uqmi` / `umbim` 只是命令行调试工具。
 - **DNS 插件**：AdGuard Home、MosDNS、SmartDNS 都装了，用哪个就让哪个接上游，注意别抢同一个端口（dnsmasq 占 53）。
 - **默认行为变化**：
   - BBR：`kmod-tcp-bbr` 自带 `/etc/sysctl.d/12-tcp-bbr.conf`，本机发起的 TCP 默认用 BBR（下载、Docker、qBittorrent 等），转发流量不受影响；默认队列 `fq_codel` 没改成 `fq`，所以不会和 SQM（它自己在接口上设 cake/fq_codel）冲突。
@@ -196,7 +208,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 - **没装的**：`luci-app-cpufreq`（它依赖的 `cpufreq` 只支持 ARM，x86 由内核 intel_pstate 自动调频）；`kmod-8021q` 不存在，802.1Q VLAN 已经编进内核；`coreutils-full` 不存在，改成按命令选的 `coreutils-*`；`luci-app-cupsd` 在 ImmortalWrt 里不存在，打印只用 p910nd；KVM / qemu-ga、iStore、Intel 无线网卡驱动按要求不装。
 - **定时控制**：ImmortalWrt feeds 里没有，用的是 gaobin89 的 JS 版（自动适配 fw4 / nftables），中文翻译直接打包在插件里，没有单独的 `luci-i18n-timecontrol-zh-cn`。
 - **Lucky、EasyTier**：这两个包下载的都是作者 / 官方 GitHub Release 的预编译二进制（不是源码编译）。
-- **首次开机后要自己配置的**：OpenClash 内核和订阅、PassWall 节点、AdGuard Home 初始化、MosDNS 规则、Tailscale 登录、ZeroTier 网络 ID、WireGuard 接口、DDNS-GO / Lucky / frpc、ACME 证书、OpenList 存储、EasyTier / Cloudflare Tunnel、VPN 服务端、SmartDNS、NUT、daed、微信推送、Keepalived、N2N、SoftEther、Syncthing、Transmission、Dufs。OpenClash、AdGuard Home 等运行时下载的内核和规则都放在根分区，4 GB 足够。
+- **首次开机后要自己配置的**：OpenClash 内核和订阅、PassWall 节点、AdGuard Home 初始化、MosDNS 规则、Tailscale 登录、ZeroTier 网络 ID、WireGuard 接口、DDNS-GO / Lucky / frpc、ACME 证书、OpenList 存储、EasyTier / Cloudflare Tunnel、VPN 服务端、SmartDNS、NUT、daed、微信推送、Keepalived、N2N、SoftEther、Syncthing、Transmission、Dufs、v2rayA / Nikki 订阅、NPS 客户端、CIFS 挂载、蜂窝接口。OpenClash、AdGuard Home 等运行时下载的内核和规则都放在根分区，4 GB 足够。
 
 ## 包管理器：apk（不是 opkg）
 

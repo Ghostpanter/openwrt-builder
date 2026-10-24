@@ -1,7 +1,7 @@
 #!/bin/bash
 # x86_64 专用：在 ./scripts/feeds update -a 之后、feeds install -a 之前执行（工作目录为 openwrt 源码根目录）
 # ImmortalWrt 自带的 luci/packages 已经有 OpenClash、PassWall、AdGuard Home、ZeroTier、DiskMan、Docker 等，
-# 这里只补上游没有的：MosDNS（sbwml）、Tailscale（asvow）、Lucky（gdy666）、EasyTier（EasyTier 官方）、定时控制（gaobin89）。
+# 这里只补上游没有的：MosDNS（sbwml）、Tailscale（asvow）、Lucky（gdy666）、EasyTier（EasyTier 官方）、定时控制（gaobin89）、Nikki（nikkinikki-org）。
 set -euo pipefail
 
 TMP=$(mktemp -d)
@@ -39,6 +39,13 @@ cp -r "$TMP/easytier/version.mk" "$TMP/easytier/easytier" "$TMP/easytier/luci-ap
 rm -rf "$TMP/timecontrol" package/extra/luci-app-timecontrol
 git clone --depth 1 https://github.com/gaobin89/luci-app-timecontrol "$TMP/timecontrol"
 cp -r "$TMP/timecontrol/luci-app-timecontrol" package/extra/
+
+# Nikki（mihomo 内核的透明代理，仅支持 firewall4）：ImmortalWrt feeds 里没有 nikki / mihomo，不会重名。
+# 只拷稳定版内核 mihomo-meta（提供虚拟包 mihomo），不拷 mihomo-alpha，免得两个互斥的包同时出现
+rm -rf "$TMP/nikki" package/extra/nikki
+git clone --depth 1 https://github.com/nikkinikki-org/OpenWrt-nikki "$TMP/nikki"
+mkdir -p package/extra/nikki
+cp -r "$TMP/nikki/nikki" "$TMP/nikki/mihomo-meta" "$TMP/nikki/luci-app-nikki" package/extra/nikki/
 
 # 删掉了 feeds 里的 mosdns，重建索引，避免 feeds install 时出现重名包
 ./scripts/feeds update -i packages
