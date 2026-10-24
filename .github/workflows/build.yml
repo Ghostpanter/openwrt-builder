@@ -110,7 +110,14 @@ jobs:
         run: |
           echo "克隆 ${{ matrix.repo_url }} 分支 ${{ matrix.repo_branch }} (${{ matrix.device }})"
           git clone --depth 1 -b "${{ matrix.repo_branch }}" "${{ matrix.repo_url }}" openwrt
-          if [ -d files ]; then cp -r files openwrt/files; fi
+          # files/common 给所有机型，files/<机型> 只给对应机型（例如 x86 的首次开机自动分区脚本）
+          for d in files/common "files/${{ matrix.device }}"; do
+            if [ -d "$d" ]; then
+              mkdir -p openwrt/files
+              cp -r "$d/." openwrt/files/
+              echo "已复制自定义文件 $d"
+            fi
+          done
 
       - name: 缓存下载包和 ccache
         uses: actions/cache@v4

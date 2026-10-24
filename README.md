@@ -59,6 +59,17 @@
 - 亚瑟：`*-jdcloud_re-ss-01-squashfs-factory.bin` / `*-sysupgrade.bin`
 - 校验：`sha256sums-x86_64`、`sha256sums-athena`、`sha256sums-arthur`；以及 `*.manifest`
 
+## x86 首次开机自动分区
+
+x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-data-partition`（只打进 x86 固件）：
+
+- 刷整盘镜像后首次开机，用系统盘剩余空间新建第 3 个分区，格式化为 ext4（卷标 `data`），挂载到 **`/opt/data`**
+- 只在空闲空间上新建分区，不动引导分区和根分区；第 3 个分区已存在且是 ext4 时只补挂载配置、不格式化
+- 装了 Docker 时，把 Docker 数据目录指到 `/opt/data/docker`
+- 日志：`/root/auto-data-partition.log`
+
+注意：sysupgrade 升级一般会保留这个分区；用整盘镜像重新写盘会覆盖它。
+
 ## 加插件 / 改配置
 
 `configs/*.config` 是 diffconfig，只写需要的选项。

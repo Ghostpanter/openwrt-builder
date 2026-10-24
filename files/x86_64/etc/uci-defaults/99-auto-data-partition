@@ -1,0 +1,139 @@
+#!/bin/sh
+# 首次开机：用系统盘剩余空间新建 ext4 数据分区，挂载到 /opt/data
+# - 只在 x86 上运行；只在空闲空间上新建第 3 个分区，不动已有分区
+# - 第 3 个分区已存在且是 ext4（比如升级后没保留配置）时，只补挂载配置，不格式化
+# - 返回非 0 时脚本会保留，下次开机重试；日志：/root/auto-data-partition.log
+
+MNT=/opt/data
+LABEL=data
+LOG=/root/auto-data-partition.log
+PENDING=/etc/auto-data-partition.pending
+
+. /etc/openwrt_release
+case "$DISTRIB_TARGET" in
+	x86/*) ;;
+	*) exit 0 ;;
+esac
+
+log() {
+	echo "$(date '+%F %T') $*" >> "$LOG"
+	logger -t auto-data-partition "$*"
+}
+
+fs_field() {
+	block info "$1" 2>/dev/null | sed -n "s/.* $2=\"\([^\"]*\)\".*/\1/p"
+}
+
+setup_mount() {
+	UUID=$(fs_field "$PART" UUID)
+	[ -n "$UUID" ] || { log "读不到 $PART 的 UUID"; return 1; }
+	mkdir -p "$MNT"
+
+	SEC=""
+	i=0
+	while uci -q get "fstab.@mount[$i]" >/dev/null; do
+		[ "$(uci -q get "fstab.@mount[$i].target")" = "$MNT" ] && SEC="@mount[$i]"
+		i=$((i + 1))
+	done
+	[ -n "$SEC" ] || SEC=$(uci add fstab mount)
+	uci set "fstab.$SEC.target=$MNT"
+	uci set "fstab.$SEC.uuid=$UUID"
+	uci set "fstab.$SEC.enabled=1"
+	uci commit fstab
+
+	if [ -f /etc/config/dockerd ]; then
+		mkdir -p "$MNT/docker"
+		uci set "dockerd.globals.data_root=$MNT/docker/"
+		uci commit dockerd
+		log "Docker 数据目录已指向 $MNT/docker"
+	fi
+
+	block mount >/dev/null 2>&1
+	log "$PART (UUID=$UUID) 已配置挂载到 $MNT"
+	return 0
+}
+
+format_part() {
+	log "格式化 $PART 为 ext4"
+	if ! mkfs.ext4 -F -L "$LABEL" "$PART" >> "$LOG" 2>&1; then
+		log "格式化失败，下次开机重试"
+		exit 1
+	fi
+	rm -f "$PENDING"
+	setup_mount || exit 1
+	exit 0
+}
+
+. /lib/functions.sh
+. /lib/upgrade/common.sh
+if ! export_bootdevice || ! export_partdevice DISK 0 || [ -z "$DISK" ]; then
+	log "找不到系统盘，跳过"
+	exit 0
+fi
+DEV="/dev/$DISK"
+case "$DISK" in
+	*[0-9]) PART="/dev/${DISK}p3" ;;
+	*) PART="/dev/${DISK}3" ;;
+esac
+log "系统盘 $DEV，数据分区 $PART"
+
+if [ -b "$PART" ]; then
+	TYPE=$(fs_field "$PART" TYPE)
+	if [ "$TYPE" = "ext4" ]; then
+		rm -f "$PENDING"
+		log "$PART 已是 ext4，只配置挂载"
+		setup_mount || exit 1
+		exit 0
+	fi
+	if [ -z "$TYPE" ] && [ "$(cat "$PENDING" 2>/dev/null)" = "$PART" ]; then
+		format_part
+	fi
+	log "$PART 已存在且不是本脚本创建的（类型：${TYPE:-未知}），为安全起见不处理"
+	exit 0
+fi
+
+command -v parted >/dev/null 2>&1 || { log "缺少 parted，跳过"; exit 0; }
+
+# GPT 镜像写到大盘后备份分区表不在盘尾，先修正
+parted -f -s "$DEV" print >/dev/null 2>&1 || \
+	printf 'Fix\n' | parted ---pretend-input-tty "$DEV" print >/dev/null 2>&1
+
+INFO=$(parted -s -m "$DEV" unit MiB print 2>/dev/null)
+TABLE=$(echo "$INFO" | sed -n '2p' | cut -d: -f6)
+DISK_MIB=$(echo "$INFO" | sed -n '2p' | cut -d: -f2 | tr -d 'MiB' | cut -d. -f1)
+END2=$(echo "$INFO" | awk -F: '$1=="2"{gsub("MiB","",$3); split($3,a,"."); print a[1]}')
+if [ -z "$TABLE" ] || [ -z "$DISK_MIB" ] || [ -z "$END2" ]; then
+	log "读不到分区表信息，跳过：$INFO"
+	exit 0
+fi
+START=$((END2 + 2))
+if [ $((DISK_MIB - START)) -lt 1024 ]; then
+	log "剩余空间不足 1GiB，不建数据分区"
+	exit 0
+fi
+
+case "$TABLE" in
+	gpt) NAME=data ;;
+	msdos) NAME=primary ;;
+	*) log "不支持的分区表类型 $TABLE，跳过"; exit 0 ;;
+esac
+
+echo "$PART" > "$PENDING"
+log "在 $DEV 上新建分区：${START}MiB 到盘尾（$TABLE）"
+if ! parted -s -a optimal "$DEV" mkpart "$NAME" ext4 "${START}MiB" 100% >> "$LOG" 2>&1; then
+	log "新建分区失败"
+	rm -f "$PENDING"
+	exit 0
+fi
+
+i=0
+while [ ! -b "$PART" ] && [ $i -lt 15 ]; do
+	sleep 1
+	i=$((i + 1))
+done
+if [ ! -b "$PART" ]; then
+	log "内核还没识别到 $PART，下次开机继续格式化"
+	exit 1
+fi
+
+format_part
