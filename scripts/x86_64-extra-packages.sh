@@ -1,7 +1,7 @@
 #!/bin/bash
 # x86_64 专用：在 ./scripts/feeds update -a 之后、feeds install -a 之前执行（工作目录为 openwrt 源码根目录）
 # ImmortalWrt 自带的 luci/packages 已经有 OpenClash、PassWall、AdGuard Home、ZeroTier、DiskMan、Docker 等，
-# 这里只补上游没有的：MosDNS（sbwml）、Tailscale（asvow）、Lucky（gdy666）。
+# 这里只补上游没有的：MosDNS（sbwml）、Tailscale（asvow）、Lucky（gdy666）、EasyTier（EasyTier 官方）。
 set -euo pipefail
 
 TMP=$(mktemp -d)
@@ -27,6 +27,13 @@ rm -rf package/extra/luci-app-tailscale/.git
 rm -rf "$TMP/lucky" package/extra/lucky package/extra/luci-app-lucky
 git clone --depth 1 https://github.com/gdy666/luci-app-lucky "$TMP/lucky"
 cp -r "$TMP/lucky/lucky" "$TMP/lucky/luci-app-lucky" package/extra/
+
+# EasyTier：ImmortalWrt feeds 里没有，用 EasyTier 官方的 easytier + luci-app-easytier
+# （easytier 包下载的是官方 GitHub Release 的预编译二进制；Makefile 引用上一级的 version.mk，所以整体放进一个目录）
+rm -rf "$TMP/easytier" package/extra/easytier
+git clone --depth 1 https://github.com/EasyTier/luci-app-easytier "$TMP/easytier"
+mkdir -p package/extra/easytier
+cp -r "$TMP/easytier/version.mk" "$TMP/easytier/easytier" "$TMP/easytier/luci-app-easytier" package/extra/easytier/
 
 # 删掉了 feeds 里的 mosdns，重建索引，避免 feeds install 时出现重名包
 ./scripts/feeds update -i packages

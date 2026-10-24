@@ -72,7 +72,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 
 ## x86_64 插件清单（旁路由全功能版）
 
-面向 Intel 3965U / 16G / 64G 旁路由。除 MosDNS、Tailscale、Lucky 外，全部来自 ImmortalWrt 自带的 `packages` / `luci` feeds；这三个由 `scripts/x86_64-extra-packages.sh` 在编译时拉取（只对 x86_64 生效）。Docker 里的应用（Jellyfin、Home Assistant 等）不集成进固件，刷机后自己在 Docker 里装。
+面向 Intel 3965U / 16G / 64G 旁路由。除 MosDNS、Tailscale、Lucky、EasyTier 外，全部来自 ImmortalWrt 自带的 `packages` / `luci` feeds；这四个由 `scripts/x86_64-extra-packages.sh` 在编译时拉取（只对 x86_64 生效）。Docker 里的应用（Jellyfin、Home Assistant 等）不集成进固件，刷机后自己在 Docker 里装。
 
 | 分类 | 包名 | 中文名 | 来源 |
 |---|---|---|---|
@@ -121,6 +121,47 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 网盘 / 文件 | `luci-app-openlist` | OpenList 网盘挂载（AList 社区分支） | ImmortalWrt luci |
 | 网盘 / 文件 | `luci-app-filebrowser` | LuCI 文件浏览 | ImmortalWrt luci |
 | 网盘 / 文件 | `filebrowser` | Filebrowser 网页文件管理（默认关闭，端口 8989） | ImmortalWrt packages |
+| 网盘 / 文件 | `luci-app-filemanager` | LuCI 文件管理器（和上面的文件浏览、Filebrowser 功能有重叠，挑顺手的用） | ImmortalWrt luci |
+| 内核 | `kmod-tcp-bbr` | BBR 拥塞控制（默认启用） | ImmortalWrt 主仓库 |
+| 内核 | `kmod-tun` `kmod-nft-tproxy` `kmod-nft-socket` | 代理用的 TUN / 透明代理模块 | ImmortalWrt 主仓库 |
+| 内核 | `kmod-vxlan` `kmod-macvlan` `kmod-veth` | VXLAN / macvlan / veth（Docker、虚拟网络） | ImmortalWrt 主仓库 |
+| 网卡驱动 | `kmod-igc` `kmod-igb` `kmod-e1000e` | Intel 2.5G / 千兆网卡 | ImmortalWrt 主仓库 |
+| 网卡驱动 | `kmod-r8125` `kmod-r8168` | Realtek 2.5G / 千兆网卡（厂商驱动，不装 r8169） | ImmortalWrt 主仓库 |
+| USB 网卡 | `kmod-usb-net-rtl8152` `kmod-usb-net-asix-ax88179` | Realtek / ASIX USB 网卡 | ImmortalWrt 主仓库 |
+| USB 网卡 | `kmod-usb-net-cdc-ether` `kmod-usb-net-cdc-ncm` `kmod-usb-net-rndis` | 手机 USB 共享网络（安卓） | ImmortalWrt 主仓库 |
+| USB 网卡 | `kmod-usb-net-ipheth` `usbmuxd` | 手机 USB 共享网络（iPhone） | ImmortalWrt 主仓库 / packages |
+| 存储驱动 | `kmod-nvme` `kmod-ata-ahci` | NVMe / SATA 硬盘 | ImmortalWrt 主仓库 |
+| 系统 | `irqbalance` | 中断均衡（默认开启） | ImmortalWrt packages |
+| 系统 | `zram-swap` | 压缩内存交换（zram） | ImmortalWrt 主仓库 |
+| 系统工具 | `smartmontools` `hdparm` `lm-sensors` | 硬盘健康 / 硬盘参数 / 温度传感器 | ImmortalWrt packages |
+| 系统工具 | `pciutils` `usbutils` | lspci / lsusb | ImmortalWrt packages |
+| 系统工具 | `fdisk` `resize2fs` `losetup` | 分区 / 扩容 ext4 / 回环设备 | ImmortalWrt 主仓库 |
+| 系统工具 | `coreutils-*`（ls、cp、sort、timeout 等 33 个） `findutils` `grep` `diffutils` | GNU 版命令行工具（替换 busybox 的同名命令） | ImmortalWrt packages |
+| 网络诊断 | `ip-full` `bind-dig` `conntrack` `iftop` `nload` | 完整 ip 命令 / DNS 查询 / 连接跟踪 / 实时流量 | ImmortalWrt 主仓库 / packages |
+| 网络诊断 | `speedtest-go` | 命令行测速（speedtest.net 节点） | ImmortalWrt packages |
+| 界面 | `luci-app-upnp` | UPnP / NAT-PMP（默认关闭） | ImmortalWrt luci |
+| 界面 | `luci-app-commands` | 自定义命令 | ImmortalWrt luci |
+| 硬件 | `kmod-hwmon-coretemp` `kmod-i2c-i801` | CPU 温度 / 主板 SMBus（配合 lm-sensors） | ImmortalWrt 主仓库 |
+| 文件系统 | `kmod-fs-btrfs` `kmod-fs-xfs` `kmod-fs-f2fs` `ntfs-3g` | Btrfs / XFS / F2FS / NTFS（FUSE 版，和 ntfs3 内核驱动并存） | ImmortalWrt 主仓库 / packages |
+| 存储 | `mdadm` `lvm2` | 软 RAID / LVM 逻辑卷 | ImmortalWrt packages |
+| 内核 | `kmod-sched-bpf` `bpftool-minimal` | eBPF 流量调度 / bpftool | ImmortalWrt 主仓库 |
+| DNS | `luci-app-smartdns` | SmartDNS | ImmortalWrt luci |
+| 分流 | `luci-app-pbr` | 策略路由（和 mwan3 功能重叠，规则别重复） | ImmortalWrt luci |
+| 限速 | `luci-app-eqos` | 按 IP 限速 | ImmortalWrt luci |
+| 组网 / 穿透 | `luci-app-easytier`（含 `easytier`） | EasyTier 去中心化组网 | [EasyTier/luci-app-easytier](https://github.com/EasyTier/luci-app-easytier) |
+| 组网 / 穿透 | `luci-app-cloudflared` | Cloudflare Tunnel | ImmortalWrt luci |
+| 组网 / 穿透 | `luci-app-natmap` | NATMap（NAT1 打洞端口映射） | ImmortalWrt luci |
+| VPN 服务端 | `luci-app-openvpn-server` | OpenVPN 服务器 | ImmortalWrt luci |
+| VPN 服务端 | `luci-app-ipsec-vpnd` | IPsec VPN 服务器（strongSwan） | ImmortalWrt luci |
+| IPTV | `luci-app-udpxy` `luci-app-msd_lite` `luci-app-omcproxy` | IPTV 组播转 HTTP / 组播代理 | ImmortalWrt luci |
+| 安全 | `luci-app-banip` | IP 黑名单封禁 | ImmortalWrt luci |
+| 存储 / 服务 | `luci-app-hd-idle` | 硬盘休眠 | ImmortalWrt luci |
+| 存储 / 服务 | `luci-app-rclone` | Rclone 网盘挂载 / 同步（含两个网页界面） | ImmortalWrt luci |
+| 存储 / 服务 | `luci-app-vsftpd` | FTP 服务器 | ImmortalWrt luci |
+| 存储 / 服务 | `luci-app-minidlna` | DLNA 媒体服务器 | ImmortalWrt luci |
+| 存储 / 服务 | `luci-app-p910nd` | 网络打印服务器（打印机直通） | ImmortalWrt luci |
+| 存储 / 服务 | `luci-app-nut` `nut-driver-usbhid-ups` | UPS 管理（NUT，带常见 USB UPS 驱动） | ImmortalWrt luci / packages |
+| 存储 / 服务 | `luci-app-vlmcsd` | KMS 激活服务器 | ImmortalWrt luci |
 
 带中文翻译的插件都同时选了对应的 `luci-i18n-*-zh-cn`。注意配置里必须有 `CONFIG_LUCI_LANG_zh_Hans=y`，否则 `make defconfig` 会把所有中文包悄悄去掉。workflow 在 `make defconfig` 之后会检查配置里写成 `=y` 的项是否都还在，x86_64 缺了任何一项会直接报错。
 
@@ -129,8 +170,15 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 - **SMB 只用 ksmbd**：ksmbd 在内核里跑，占用小、速度快，已经够家用；samba4 和它都要占 445 端口，两个一起装会冲突，所以不装 samba4。
 - **核显**：编进了 i915 驱动和固件，Docker 里的 Jellyfin 等容器可以把 `/dev/dri` 映射进去做硬件转码（容器自带 VAAPI 驱动）。OpenWrt 本身没有 Intel VAAPI 用户态驱动，宿主机上的 `ffmpeg` 只能软解。
 - **代理插件**：OpenClash、PassWall、HomeProxy 都装了，但同一时间只开一个，否则透明代理规则会互相打架。
-- **Lucky**：`lucky` 包下载的是作者发布的预编译二进制（不是源码编译）。
-- **首次开机后要自己配置的**：OpenClash 内核和订阅、PassWall 节点、AdGuard Home 初始化、MosDNS 规则、Tailscale 登录、ZeroTier 网络 ID、WireGuard 接口、DDNS-GO / Lucky / frpc、ACME 证书、OpenList 存储。OpenClash、AdGuard Home 等运行时下载的内核和规则都放在根分区，4 GB 足够。
+- **DNS 插件**：AdGuard Home、MosDNS、SmartDNS 都装了，用哪个就让哪个接上游，注意别抢同一个端口（dnsmasq 占 53）。
+- **默认行为变化**：
+  - BBR：`kmod-tcp-bbr` 自带 `/etc/sysctl.d/12-tcp-bbr.conf`，本机发起的 TCP 默认用 BBR（下载、Docker、qBittorrent 等），转发流量不受影响；默认队列 `fq_codel` 没改成 `fq`，所以不会和 SQM（它自己在接口上设 cake/fq_codel）冲突。
+  - irqbalance：包里默认关闭，首次开机脚本 `files/x86_64/etc/uci-defaults/98-enable-irqbalance` 会打开。
+  - zram-swap：默认开启，大小是内存的一半；可用 `uci set system.@system[0].zram_size_mb=大小` 调整，不想要就 `/etc/init.d/zram disable`。
+  - UPnP：装了但默认关闭，要用去「服务 → UPnP」里开。
+- **没装的**：`luci-app-cpufreq`（它依赖的 `cpufreq` 只支持 ARM，x86 由内核 intel_pstate 自动调频）；`kmod-8021q` 不存在，802.1Q VLAN 已经编进内核；`coreutils-full` 不存在，改成按命令选的 `coreutils-*`；`luci-app-cupsd` 在 ImmortalWrt 里不存在，打印只用 p910nd；KVM / qemu-ga、iStore、Intel 无线网卡驱动按要求不装。
+- **Lucky、EasyTier**：这两个包下载的都是作者 / 官方 GitHub Release 的预编译二进制（不是源码编译）。
+- **首次开机后要自己配置的**：OpenClash 内核和订阅、PassWall 节点、AdGuard Home 初始化、MosDNS 规则、Tailscale 登录、ZeroTier 网络 ID、WireGuard 接口、DDNS-GO / Lucky / frpc、ACME 证书、OpenList 存储、EasyTier / Cloudflare Tunnel、VPN 服务端、SmartDNS、NUT。OpenClash、AdGuard Home 等运行时下载的内核和规则都放在根分区，4 GB 足够。
 
 ## 加插件 / 改配置
 

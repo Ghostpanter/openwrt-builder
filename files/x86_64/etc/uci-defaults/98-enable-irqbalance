@@ -1,0 +1,7 @@
+#!/bin/sh
+# 首次开机：开启 irqbalance（包里默认 enabled=0），把网卡等中断分散到多个 CPU 核
+[ -f /etc/config/irqbalance ] || exit 0
+uci -q set irqbalance.irqbalance.enabled='1'
+uci -q commit irqbalance
+/etc/init.d/irqbalance enable 2>/dev/null
+exit 0
