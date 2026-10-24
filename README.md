@@ -78,6 +78,48 @@
   - `logs/<包路径>/compile.txt`：每个包单独的编译日志（`BUILD_LOG=1`），失败的包目录里有 `error.txt`
   - `download.log`、`feeds-install.log`、`.config`
 
+## 本地编译
+
+不想用 GitHub Actions，也可以在自己的 Ubuntu 上编（推荐 **Ubuntu 24.04**，和 CI 一样；x86_64 的 6.18 内核要求 clang ≥ 15，22.04 自带的 clang 14 不行）。步骤和 CI 完全一致：上游仓库 / 分支、apt 依赖列表都直接从 `.github/workflows/build.yml` 读。
+
+准备：
+
+```bash
+git clone https://github.com/Ghostpanter/openwrt-builder.git
+cd openwrt-builder
+chmod +x scripts/*.sh && git config core.fileMode false   # 第一次：加执行权限，并让 git 忽略权限变化，以后 git pull 不冲突
+./scripts/local-build.sh --deps                            # 第一次：sudo apt 安装编译依赖（和 CI 同一份列表）
+```
+
+> 不想改权限也可以直接用 `bash scripts/local-build.sh ...`，效果一样。
+
+编译：
+
+```bash
+./scripts/local-build.sh x86     # x86_64（ImmortalWrt master），也可以写 x86_64
+./scripts/local-build.sh ys      # 亚瑟 AX1800 Pro（LibWrt 25.12-nss），也可以写 arthur
+./scripts/local-build.sh ydn     # 雅典娜 AX6600（LibWrt 25.12-nss），也可以写 athena
+```
+
+选项：
+
+| 选项 | 作用 |
+| --- | --- |
+| `-j N` | 编译线程数，默认 CPU 核数 |
+| `--clean` | 删掉已有源码重新克隆（保留 `dl/` 下载缓存） |
+| `--config-only` | 只做到 `make defconfig`，不下载不编译，适合先看配置 |
+| `--menuconfig` | `make defconfig` 之后打开 `make menuconfig` 手动调整（改动只在本地源码树里） |
+| `--deps` | 先安装依赖；只给 `--deps` 不给机型就只装依赖 |
+| `-h` / `--help` | 中文帮助 |
+
+说明：
+
+- 每个机型一个目录：源码在 `build/<机型>/openwrt`（`x86_64` / `arthur` / `athena`），互不影响；`build/` 已加入 `.gitignore`。
+- 再次运行会把源码 `git fetch` 到上游最新、重新复制 `files/`、重新 feeds 和载入配置，然后**增量编译**（第一次 x86_64 要几个小时，之后快很多）。
+- 控制台只显示进度和报错，完整日志在 `build/<机型>/logs/`：`build.log`、失败时自动 `make -j1 V=s` 重试的 `build-verbose.log`、每个包的 `packages/<包路径>/compile.txt`（失败的包有 `error.txt`），以及 `feeds-*.log`、`download.log`、`defconfig.log`。
+- 编译成功后会打印固件路径，在 `build/<机型>/openwrt/bin/targets/` 下。
+- 不能用 root 运行（OpenWrt 拒绝 root 编译）；磁盘建议至少 100 GB 空闲，不足会提示。
+
 ## x86 首次开机自动分区
 
 x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-data-partition`（只打进 x86 固件）：
