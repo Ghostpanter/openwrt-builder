@@ -80,7 +80,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 
 ## x86_64 插件清单（旁路由全功能版）
 
-面向 Intel 3965U / 16G / 64G 旁路由。除 MosDNS、Tailscale、Lucky、EasyTier、定时控制、Nikki 外，全部来自 ImmortalWrt 自带的 `packages` / `luci` feeds；这六个由 `scripts/x86_64-extra-packages.sh` 在编译时拉取（只对 x86_64 生效）。Docker 里的应用（Jellyfin、Home Assistant 等）不集成进固件，刷机后自己在 Docker 里装。
+面向 Intel 3965U / 16G / 64G 旁路由。除 MosDNS、Tailscale、Lucky、EasyTier、定时控制、Nikki、clash-exporter 外，全部来自 ImmortalWrt 自带的 `packages` / `luci` feeds；这七个由 `scripts/x86_64-extra-packages.sh` 在编译时拉取（只对 x86_64 生效）。Docker 里的应用（Jellyfin、Home Assistant 等）不集成进固件，刷机后自己在 Docker 里装。
 
 | 分类 | 包名 | 中文名 | 来源 |
 |---|---|---|---|
@@ -119,6 +119,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 监控 | `luci-app-netdata` | Netdata 实时监控 | ImmortalWrt luci |
 | 监控 | `luci-app-statistics` | 实时统计 / 历史图表（collectd） | ImmortalWrt luci |
 | 监控 | `prometheus-node-exporter-lua` + 采集器 `-nat_traffic` `-netstat` `-openwrt` `-thermal` `-hwmon` `-uci_dhcp_host` `-textfile` `-snmp6` `-mwan3` `-filesystem` `-ethtool` | Prometheus 指标导出（LAN 9100 端口，默认开启；lua 版，不装 ucode 版） | ImmortalWrt packages |
+| 监控 | `clash-exporter` | OpenClash / Mihomo 流量指标（LAN 2112 端口，默认开启；自动读 OpenClash 面板端口和密码） | Ghostpanter/clash-exporter |
 | 网络工具 | `luci-app-wol` | 网络唤醒 | ImmortalWrt luci |
 | 网络工具 | `iperf3-ssl` `tcpdump` `ethtool-full` `mtr-json` | 测速 / 抓包 / 网卡工具 / 路由追踪 | ImmortalWrt 主仓库 / packages |
 | 守护 | `luci-app-watchcat` | 网络看门狗（断网自动重启接口或设备） | ImmortalWrt luci |
@@ -244,6 +245,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
   - `textfile` 采集器会读 `/var/prometheus/*.prom`，自己的脚本往里写指标就能一起抓走。
   - Netdata 也自带 Prometheus 格式输出：`http://路由器LAN地址:19999/api/v1/allmetrics?format=prometheus`（Netdata 默认只允许内网地址访问），两个选一个抓就行，别重复存。
   - Grafana 面板：node exporter 用社区的 “Node Exporter Full”（ID 1860），OpenWrt 专用指标（Wi‑Fi、DHCP 主机、NAT 连接）可以搜 “OpenWrt” 面板（例如 ID 11147，或更新的 18153）。
+  - clash-exporter：只编进 x86_64。开机自启，监听 `0.0.0.0:2112`（防火墙挡住 WAN），抓取地址 `http://路由器LAN地址:2112/metrics`。默认从 OpenClash 的 `cn_port` / `dashboard_password` 连 `127.0.0.1`。按目的地拆流量默认关闭，要开就 `uci set clash-exporter.main.collect_dest='1'`。Grafana 用原来的 Clash dashboard（ID 18530）。雅典娜和亚瑟没装 OpenClash，也没编这个包。
 - **网易云解锁**：依赖 Node.js，编译时要从源码交叉编译 node，整体编译时间会明显变长，固件也会大几十 MB；它的核心程序首次启动时在线下载。
 - **防火墙**：用的是 firewall4（nftables），没有装旧的 firewall（iptables）。Docker、mwan3、strongSwan 依赖 `iptables` 命令，装进来的是走 nftables 的兼容版 `iptables-nft` / `ip6tables-nft`，没有 legacy 版。ImmortalWrt 默认打开 FullCone NAT（`kmod-nft-fullcone`，IPv4 开、IPv6 关）和软件 / 硬件流量卸载（x86 网卡一般不支持硬件卸载，实际只有软件卸载生效）。
 - **广告过滤**：adblock-fast 和 AdGuard Home 选一个用就行。
@@ -295,7 +297,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 流量控制 | `luci-app-sqm` SQM；`luci-app-qosify` qosify；`luci-app-eqos` 按 IP 限速；`luci-app-mwan3` 多线负载均衡；`luci-app-syncdial` 多拨；`luci-app-pbr` 策略路由；`kmod-sched` `kmod-sched-ctinfo` `kmod-sched-connmark` `kmod-sched-flower` `kmod-sched-act-vlan` `kmod-sched-drr` `kmod-sched-prio` `kmod-sched-mqprio` tc 扩展；`kmod-sched-bpf` + `bpftool-minimal` eBPF 调度；`kmod-netem` 网络损伤模拟；`luci-app-appfilter` 应用过滤；`luci-app-timecontrol` 定时控制；`luci-app-banip` IP 封禁；`luci-app-crowdsec-firewall-bouncer` CrowdSec 封禁端 |
 | 存储与共享 | `luci-app-samba4` + `samba4-server` Samba 4 共享（`ksmbd-server` / `luci-app-ksmbd` 显式不装）；`luci-app-nfs` NFS；`luci-app-vsftpd` FTP；`luci-app-dufs` WebDAV；`luci-app-minidlna` DLNA；`luci-app-cifs-mount` 挂载远程 SMB；`luci-app-rclone` Rclone；`luci-app-openlist` OpenList；`luci-app-syncthing` Syncthing；`luci-app-filebrowser` `filebrowser` `luci-app-filemanager` 文件管理；`luci-app-diskman` 磁盘管理；`luci-app-hd-idle` 硬盘休眠；`parted` `fdisk` `lsblk` 分区；`e2fsprogs` `resize2fs` ext4 工具；`f2fs-tools` F2FS 工具；`xfs-mkfs` XFS 格式化；`ntfs-3g` NTFS（FUSE）；`block-mount` 挂载点；`losetup` 回环设备；`mdadm` 软 RAID；`lvm2` LVM；`smartmontools` 硬盘健康；`hdparm` 硬盘参数；`nvme-cli` NVMe 管理 |
 | 下载 | `luci-app-aria2` Aria2；`luci-app-qbittorrent` qBittorrent；`luci-app-transmission` Transmission |
-| 监控 | `luci-app-netdata` Netdata；`prometheus-node-exporter-lua` + 11 个采集器（nat_traffic netstat openwrt thermal hwmon uci_dhcp_host textfile snmp6 mwan3 filesystem ethtool）Prometheus 指标导出；`luci-app-statistics` 统计图表；`luci-app-nlbwmon` 按设备流量；`luci-app-vnstat2` vnStat；`luci-app-snmpd` SNMP；`luci-app-lldpd` LLDP；`luci-app-watchcat` 网络看门狗；`luci-app-wechatpush` 微信推送 |
+| 监控 | `luci-app-netdata` Netdata；`prometheus-node-exporter-lua` + 11 个采集器（nat_traffic netstat openwrt thermal hwmon uci_dhcp_host textfile snmp6 mwan3 filesystem ethtool）Prometheus 指标导出；`clash-exporter` OpenClash 流量指标（2112）；`luci-app-statistics` 统计图表；`luci-app-nlbwmon` 按设备流量；`luci-app-vnstat2` vnStat；`luci-app-snmpd` SNMP；`luci-app-lldpd` LLDP；`luci-app-watchcat` 网络看门狗；`luci-app-wechatpush` 微信推送 |
 | IPTV | `luci-app-udpxy` udpxy；`luci-app-msd_lite` msd_lite；`luci-app-omcproxy` 组播代理；`luci-app-rtp2httpd` rtp2httpd |
 | 4G5G | `luci-proto-modemmanager` + `modemmanager` 拨号；`kmod-usb-serial-option` `kmod-usb-acm` `kmod-usb-wdm` USB 串口 / 控制口；`kmod-usb-net-qmi-wwan` `kmod-usb-net-cdc-mbim` `kmod-usb-net-huawei-cdc-ncm` QMI / MBIM / 华为 NCM；`uqmi` `umbim` 命令行；`kmod-wwan` `kmod-mhi-net` `kmod-mhi-wwan-ctrl` `kmod-mtk-t7xx` PCIe 5G 模块；`luci-app-3ginfo-lite` 信号信息；`luci-app-modemband` 锁频段；`luci-app-sms-tool-js` 短信 |
 | 外设 | `usbmuxd` iPhone 连接；`luci-app-p910nd` 网络打印；`luci-app-nut` + `nut-driver-usbhid-ups` UPS；`luci-app-mosquitto` MQTT 服务器；`luci-app-vlmcsd` KMS 激活 |
