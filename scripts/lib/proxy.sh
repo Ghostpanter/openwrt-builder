@@ -8,7 +8,7 @@
 #   apt 前：proxy_apt_conf（有代理时生成临时 apt 配置，用 sudo apt-get -c "$PROXY_APT_CONF"），退出时 proxy_cleanup
 #
 # 优先级：--proxy > 环境变量 PROXY > 已有的 https_proxy / HTTPS_PROXY / http_proxy / HTTP_PROXY / all_proxy / ALL_PROXY。
-# 只设置本进程及子进程的环境变量（git、curl、wget、gh、OpenWrt 的 make download 都认），
+# 只设置本进程及子进程的环境变量（git、curl、wget、gh、go、OpenWrt 的 feeds / make download 都认），
 # 不改 git config --global，不往 /etc/apt 写永久配置。
 
 PROXY_URL="${PROXY_URL:-}"
@@ -26,17 +26,21 @@ proxy_apply() {
 		src="环境变量 PROXY"
 	fi
 	if [ -z "$PROXY_URL" ]; then
-		# 没给 --proxy：沿用 shell 里已经设好的代理（只用来告诉 apt，其他程序本来就会读环境变量）
+		# 没给 --proxy：沿用 shell 里已经设好的代理（同样补齐大小写、传给 make 和 apt）
 		local v
 		for v in "${https_proxy:-}" "${HTTPS_PROXY:-}" "${http_proxy:-}" "${HTTP_PROXY:-}" "${all_proxy:-}" "${ALL_PROXY:-}"; do
 			if [ -n "$v" ]; then
 				PROXY_URL="$v"
-				echo "代理：沿用环境变量里的 $(proxy_mask "$PROXY_URL")"
+				src="shell 里已有的代理环境变量"
 				break
 			fi
 		done
-		[ -n "$PROXY_URL" ] || return 0
-	else
+		if [ -z "$PROXY_URL" ]; then
+			echo "代理：未设置（直连；国内可用的公开加速地址见后面的 GOPROXY 等）"
+			return 0
+		fi
+	fi
+	if [ "$src" = "--proxy" ] || [ "$src" = "环境变量 PROXY" ]; then
 		# 没写协议当成 http://
 		case "$PROXY_URL" in
 			*://*) ;;
@@ -50,10 +54,11 @@ proxy_apply() {
 			*://*[!/]:[0-9]* | *://*[!/]:[0-9]*/) ;;
 			*) echo "错误：代理地址要带端口，例如 http://192.168.31.246:7890，收到：$(proxy_mask "$PROXY_URL")" >&2; exit 1 ;;
 		esac
-		export http_proxy="$PROXY_URL" https_proxy="$PROXY_URL" HTTP_PROXY="$PROXY_URL" HTTPS_PROXY="$PROXY_URL"
-		export all_proxy="$PROXY_URL" ALL_PROXY="$PROXY_URL"
-		echo "代理：$(proxy_mask "$PROXY_URL")（来自 $src；git / curl / wget / gh / make download 都走它）"
 	fi
+	# 大小写都设（curl 只认小写 http_proxy，Go / gh 认大写），本进程和所有子进程（git、feeds、make、go、wget、curl、gh）都继承
+	export http_proxy="$PROXY_URL" https_proxy="$PROXY_URL" HTTP_PROXY="$PROXY_URL" HTTPS_PROXY="$PROXY_URL"
+	export all_proxy="$PROXY_URL" ALL_PROXY="$PROXY_URL"
+	echo "代理：$(proxy_mask "$PROXY_URL")（来自 $src；git / feeds / make download / Go 模块 / apt / gh 都走它）"
 	# 本机地址不走代理
 	local np="${no_proxy:-${NO_PROXY:-}}"
 	case ",$np," in
@@ -74,8 +79,21 @@ proxy_apply() {
 		esac
 	fi
 	case "$PROXY_URL" in
-		*://*:*@*) echo "提示：代理带了密码。密码里有 @ : / # 等特殊字符时要写成 %40 %3A %2F %23；别把带密码的命令写进仓库或发给别人" ;;
+		*://*:*@*) echo "提示：代理带了密码。密码里有 @ : / # $ 等特殊字符时要写成 %40 %3A %2F %23 %24；别把带密码的命令写进仓库或发给别人" ;;
 	esac
+}
+
+# 给 make 命令行用的代理变量（除了 export，再显式写到 make 命令行上：命令行变量会进 MAKEFLAGS，
+# 嵌套的子 make、golang-build.sh 里的 go、download.pl 里的 wget/curl 都一定拿得到）。用法：
+#   proxy_make_args; make ... "${PROXY_MAKE_ARGS[@]}"
+PROXY_MAKE_ARGS=()
+proxy_make_args() {
+	PROXY_MAKE_ARGS=()
+	[ -n "$PROXY_URL" ] || return 0
+	local v
+	for v in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY; do
+		PROXY_MAKE_ARGS+=("$v=${!v:-}")
+	done
 }
 
 # apt 不读环境变量（sudo 也会清掉），有代理时生成一个临时配置文件（权限 600，退出时删除），用法：sudo apt-get -c "$PROXY_APT_CONF" ...

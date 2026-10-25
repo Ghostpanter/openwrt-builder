@@ -19,8 +19,9 @@ usage() {
   --repo OWNER/NAME   上传到哪个仓库，默认取本仓库 git remote origin
   --proxy URL         走代理（也可 --proxy=URL 或 export PROXY=URL），例如 http://192.168.31.246:7890，
                       带认证：http://用户名:密码@192.168.31.246:7893（密码特殊字符要 % 编码）。
-                      只对本次运行的 gh 生效（设置 https_proxy 等环境变量），不改 gh / git 的全局配置；
-                      不给时 shell 里已有的 https_proxy 照样生效
+                      本次运行的所有 gh 请求（查询、创建 Release、上传、删除旧资产）都走它：
+                      export http_proxy / https_proxy / all_proxy（大小写都设），不改 gh / git 的全局配置；
+                      不给时 shell 里已有的 https_proxy 照样生效（同样补齐大小写）；都没有就直连 GitHub
   --prune             上传成功后删掉该机型其他（旧上游 SHA 的）ci-cache Release，节省空间
   -h, --help          显示本帮助
 

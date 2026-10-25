@@ -158,19 +158,23 @@ chmod +x scripts/*.sh && git config core.fileMode false   # 第一次：加执�
    然后 PowerShell 执行 `wsl --shutdown` 再进入。安装发行版的那个盘（例如 E:）要留 **100 GB 以上**，编译时虚拟磁盘会一直涨。
 4. 脚本会自动识别 WSL（打印「环境：WSL（…）」或「环境：本机 Linux（…）」），并在编译时从 `PATH` 去掉 `/mnt/c/...` 这类 Windows 路径（带空格、括号会让 OpenWrt 编译出错）。
 5. 想把结果上传给 CI 用（下一节）：**Debian 13 的 glibc（2.41）比 CI 的 Ubuntu 24.04（2.39）新，编出来的工具链 CI 用不了**，打包脚本会拒绝。要给 CI 提速，请在 WSL 里装 **Ubuntu 24.04**（最稳）或 **Debian 12** 来编，也可以装在 E:，例如 `wsl --install -d Ubuntu-24.04 --location E:\WSL\Ubuntu-24.04`（老版本 wsl 没有 `--location` 时用 `wsl --export` / `wsl --import` 搬到 E:）。只在本地编固件的话 Debian 13 没问题。
-6. **国内网络 / 走 Clash 代理**：三个脚本都支持 `--proxy URL`（也可写 `--proxy=URL`，或先 `export PROXY=URL`），会给本次运行设置 `http_proxy` / `https_proxy` / `all_proxy`（含大写），git 克隆、feeds update、`make download`（wget/curl）、gh 上传都继承；`--deps` 时 apt 用一个临时配置文件走同一代理，用完就删。不改 `git config --global`，不在 `/etc/apt` 留永久配置。不给 `--proxy` 时，shell 里已经 export 的 `https_proxy` 也照样生效。
+6. **国内网络：两种模式**（三个脚本都支持 `--proxy URL`，也可写 `--proxy=URL`，或先 `export PROXY=URL`）
+   - **给了 `--proxy`（Clash / HTTP 代理）**：本次运行的**所有**联网步骤都走它——git 克隆 / 更新、feeds update、额外插件的 git clone、`make download`（wget/curl）、编译阶段 Go 包下载模块、pip、cargo、`--deps` 的 apt、gh 上传。脚本会 export `http_proxy` / `https_proxy` / `all_proxy`（大小写都设），并在 `make` 命令行上再显式传一遍，嵌套子 make 和 go 一定拿得到；apt 用临时配置文件，用完就删。此时 GOPROXY 默认 `https://proxy.golang.org|https://goproxy.cn,direct`（经代理走官方，失败再试 goproxy.cn），不设 pip 镜像。不改 `git config --global`，不在 `/etc/apt` 留永久配置。shell 里已经 export 了 `https_proxy` 等同于给了 `--proxy`。
+   - **不给 `--proxy`**：直连，不需要 Clash，自动用国内公开加速地址：`GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct`（GOSUMDB 校验照常）、`PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`（宿主机 Python 包，requirements 带哈希校验）。源码（GitHub 上的 ImmortalWrt / LibWrt 和 feeds）和 `make download` 仍按上游原地址和 OpenWrt 自带镜像下载，GitHub 不通时还是要 `--proxy`。`--goproxy URL|off`、`--pip-index URL|off` 可单独改，`--no-mirror` 全部关掉。
 
    ```bash
+   ./scripts/local-build.sh x86                                                    # 不走代理：公开加速
    ./scripts/local-build.sh --proxy http://192.168.31.246:7890 --deps             # Clash 不带认证
-   ./scripts/local-build.sh --proxy http://用户名:密码@192.168.31.246:7893 x86     # Clash 带认证
+   ./scripts/local-build.sh --proxy 'http://用户名:密码@192.168.31.246:7893' x86   # Clash 带认证，全部走代理
    ```
 
    - WSL2 默认（NAT 网络）里 `127.0.0.1` 是 WSL 自己，不是 Windows：请填 Windows 或路由器的局域网 IP，并在 Clash 打开「允许局域网」（或在 `.wslconfig` 设 `networkingMode=mirrored`）。建议用 Clash 的 HTTP / mixed 端口，wget 不支持 socks5。
-   - 密码里有 `@ : / #` 等字符要写成 `%40 %3A %2F %23`。**不要把带密码的地址写进仓库、脚本或 issue**；直接写在命令行会留在 `~/.bash_history`，可以在命令前加一个空格（Ubuntu 默认 `HISTCONTROL=ignoreboth` 不记录），或者 `read -rs PROXY && export PROXY` 输入后再运行脚本。
-7. **Go 包（crowdsec-firewall-bouncer、adguardhome、tailscale、mosdns 等约 20 个）在编译阶段才用 go 下载依赖**，`make download` 不管这一步，国内直连 `proxy.golang.org` 常超时，表现为 `ERROR: package/feeds/packages/<包> failed to build`。`local-build.sh` 默认设 `GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct`（shell 里已 export `GOPROXY` 就沿用；`--goproxy URL` 自定义，`--goproxy off` 不设）。失败时脚本会打印失败包 `logs/packages/.../compile.txt` 的最后 60 行，真正的报错在那里。修好网络后直接重跑同一条命令即可（增量，不用 `--clean`）；**自己进源码树手动 `make` 时不会经过脚本，GOPROXY 要自己 export**，否则还是连 `proxy.golang.org`。只重编一个包：
+   - 密码里有 `@ : / # $` 等字符要写成 `%40 %3A %2F %23 %24`。**不要把带密码的地址写进仓库、脚本或 issue**；直接写在命令行会留在 `~/.bash_history`，可以在命令前加一个空格（Ubuntu 默认 `HISTCONTROL=ignoreboth` 不记录），或者 `read -rs PROXY && export PROXY` 输入后再运行脚本。
+7. **Go 包（crowdsec-firewall-bouncer、adguardhome、tailscale、mosdns 等约 20 个）在编译阶段才用 go 下载依赖**，`make download` 不管这一步，国内直连 `proxy.golang.org` 常超时，表现为 `ERROR: package/feeds/packages/<包> failed to build`。`local-build.sh` 默认设 `GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct`（shell 里已 export `GOPROXY` 就沿用；`--goproxy URL` 自定义，`--goproxy off` 不设）。失败时脚本会打印失败包 `logs/packages/.../compile.txt` 的最后 60 行，真正的报错在那里。修好网络后直接重跑同一条命令即可（增量，不用 `--clean`）；**自己进源码树手动 `make` 时不会经过脚本，GOPROXY（和代理）要自己 export**，否则还是直连 `proxy.golang.org`。只重编一个包：
 
    ```bash
    export GOPROXY=https://goproxy.cn,direct
+   # 要走 Clash 时再加：export http_proxy='http://用户名:密码@192.168.31.246:7893' https_proxy="$http_proxy"
    cd ~/openwrt-builder/build/x86_64/openwrt
    make package/feeds/packages/crowdsec-firewall-bouncer/{clean,compile} -j1 V=s
    ```

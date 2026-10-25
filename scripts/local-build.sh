@@ -28,17 +28,23 @@ usage() {
   --config-only       只做到 make defconfig（含 --menuconfig），不下载、不编译
   --menuconfig        make defconfig 之后打开 make menuconfig 手动调整
   --deps              先用 sudo apt 安装编译依赖（列表同 workflow），只给这个参数不给机型就只装依赖
-  --proxy URL         走代理（也可写 --proxy=URL，或事先 export PROXY=URL），例如
+  --proxy URL         走 Clash / HTTP 代理（也可写 --proxy=URL，或事先 export PROXY=URL），例如
                         http://192.168.31.246:7890            Clash 不带认证
                         http://用户名:密码@192.168.31.246:7893  Clash 带认证（密码特殊字符要 % 编码）
-                      会设置 http_proxy / https_proxy / all_proxy（含大写），git 克隆、feeds update、
-                      make download（wget/curl）都继承；--deps 时 apt 用临时配置走同一代理，用完删除。
+                      本次运行的所有联网步骤都走它：git 克隆/更新、feeds update、额外插件的 git clone、
+                      make download（wget/curl）、编译阶段 Go 包下载模块、Python 包 pip 下载、cargo、apt（--deps）。
+                      做法：export http_proxy / https_proxy / all_proxy（大小写都设）+ no_proxy=localhost，
+                      并在 make 命令行上再显式传一遍，嵌套的子 make 和 go 也一定拿得到；apt 用临时配置文件（用完删除）。
+                      给了 --proxy 时 GOPROXY 默认用官方 proxy.golang.org（经代理），失败再试 goproxy.cn；不设 pip 镜像。
                       不改 git config --global，也不在 /etc/apt 留永久配置。
-                      不给 --proxy 时，shell 里已有的 https_proxy / http_proxy 照样生效（apt 也会用）
-  --goproxy URL       Go 模块代理（GOPROXY）。约 20 个 Go 包（crowdsec-firewall-bouncer、adguardhome、
-                      tailscale、mosdns 等）在「编译」阶段才用 go 下载依赖，make download 不管这一步。
-                      默认 https://goproxy.cn,https://proxy.golang.org,direct（国内能直连）；
-                      shell 里已 export GOPROXY 时沿用它；--goproxy off 表示不设、用 Go 自己的默认值
+                      shell 里已经 export 了 https_proxy / http_proxy 时，等同于给了 --proxy
+  不给 --proxy 时     直连，不需要 Clash；自动用国内公开加速地址：
+                        GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct（Go 包编译时下载依赖）
+                        PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple（编译时 pip 装宿主机 Python 包，带哈希校验）
+                      源码（GitHub）和 make download 仍按上游原地址 / OpenWrt 自带镜像下载
+  --goproxy URL       自定义 GOPROXY；shell 里已 export GOPROXY 时沿用它；--goproxy off 表示不设、用 Go 默认值
+  --pip-index URL     自定义 pip 镜像；shell 里已 export PIP_INDEX_URL 时沿用它；--pip-index off 不设
+  --no-mirror         不用任何公开加速地址（等于 --goproxy off --pip-index off）
   -h, --help          显示本帮助
 
 目录（都在仓库的 build/ 下，已加入 .gitignore）：
@@ -49,7 +55,7 @@ usage() {
 
 示例：
   ./scripts/local-build.sh --deps            # 第一次：安装依赖
-  ./scripts/local-build.sh x86               # 编 x86_64
+  ./scripts/local-build.sh x86               # 编 x86_64（不走代理，自动用 goproxy.cn / 清华 pypi 等公开加速）
   ./scripts/local-build.sh ys                # 编亚瑟
   ./scripts/local-build.sh -j 8 ydn          # 8 线程编雅典娜
   ./scripts/local-build.sh --config-only --menuconfig x86   # 只看/调配置
@@ -87,7 +93,11 @@ CONFIG_ONLY=0
 MENUCONFIG=0
 DEPS=0
 GOPROXY_OPT=""
+PIP_INDEX_OPT=""
+# 不走代理时用国内公开加速；走代理时以官方源为主（| 表示任何错误都换下一个，, 只在 404/410 时换）
 GOPROXY_DEFAULT="https://goproxy.cn,https://proxy.golang.org,direct"
+GOPROXY_DEFAULT_PROXIED="https://proxy.golang.org|https://goproxy.cn,direct"
+PIP_INDEX_DEFAULT="https://pypi.tuna.tsinghua.edu.cn/simple"
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -102,6 +112,9 @@ while [ $# -gt 0 ]; do
 		--proxy=*) PROXY_URL="${1#--proxy=}"; [ -n "$PROXY_URL" ] || die "--proxy= 后面要跟代理地址" ;;
 		--goproxy) [ $# -ge 2 ] || die "--goproxy 后面要跟地址，例如 https://goproxy.cn,direct，或 off"; GOPROXY_OPT="$2"; shift ;;
 		--goproxy=*) GOPROXY_OPT="${1#--goproxy=}"; [ -n "$GOPROXY_OPT" ] || die "--goproxy= 后面要跟地址或 off" ;;
+		--pip-index) [ $# -ge 2 ] || die "--pip-index 后面要跟地址或 off"; PIP_INDEX_OPT="$2"; shift ;;
+		--pip-index=*) PIP_INDEX_OPT="${1#--pip-index=}"; [ -n "$PIP_INDEX_OPT" ] || die "--pip-index= 后面要跟地址或 off" ;;
+		--no-mirror) GOPROXY_OPT=off; PIP_INDEX_OPT=off ;;
 		-*) die "未知选项 $1（看 --help）" ;;
 		*)
 			[ -z "$DEVICE" ] || die "只能指定一个机型"
@@ -197,26 +210,50 @@ else
 	echo "环境：本机 Linux（$OS_NAME，内核 $(uname -r)）"
 fi
 
-# 代理（--proxy / PROXY / 已有环境变量），之后的 git / wget / curl / apt 都走它
+# 代理（--proxy / PROXY / 已有环境变量）：之后的 git / feeds / wget / curl / go / pip / apt 都走它
 proxy_apply
 
-# Go 模块代理：OpenWrt 的 golang-package.mk 会透传环境里的 GOPROXY / GOSUMDB。
+# Go 模块代理：OpenWrt 的 golang-package.mk 会透传环境里的 GOPROXY / GOSUMDB（GOSUMDB 不动，校验照常）。
 # Go 包在编译时才 go mod download，国内直连 proxy.golang.org 经常超时，包就 "failed to build"。
+if [ -n "$PROXY_URL" ]; then GOPROXY_AUTO="$GOPROXY_DEFAULT_PROXIED"; else GOPROXY_AUTO="$GOPROXY_DEFAULT"; fi
 case "$GOPROXY_OPT" in
-	off | default | none) unset GOPROXY; echo "GOPROXY：不设置（Go 默认 proxy.golang.org）" ;;
+	off | default | none) unset GOPROXY; echo "GOPROXY：不设置（Go 默认 proxy.golang.org${PROXY_URL:+，经代理}）" ;;
 	"")
 		if [ -n "${GOPROXY:-}" ]; then
 			echo "GOPROXY：沿用环境变量 $GOPROXY"
 		else
-			export GOPROXY="$GOPROXY_DEFAULT"
-			echo "GOPROXY：$GOPROXY（Go 包编译时下载依赖用；--goproxy off 可关掉）"
+			export GOPROXY="$GOPROXY_AUTO"
+			if [ -n "$PROXY_URL" ]; then
+				echo "GOPROXY：$GOPROXY（经代理访问；--goproxy 可改）"
+			else
+				echo "GOPROXY：$GOPROXY（公开加速，直连可用；--goproxy 可改，off 关掉）"
+			fi
 		fi
 		;;
 	*) export GOPROXY="$GOPROXY_OPT"; echo "GOPROXY：$GOPROXY（来自 --goproxy）" ;;
 esac
-# 除了 export，再在 make 命令行上显式传一次（命令行变量会进 MAKEFLAGS，所有子 make 和 go 都能拿到）
-MAKE_GO_ARGS=()
-[ -z "${GOPROXY:-}" ] || MAKE_GO_ARGS=("GOPROXY=$GOPROXY")
+
+# pip 镜像：python 宿主机构建依赖在编译时用 pip 下载（requirements 带 --require-hashes，换镜像不影响校验）
+case "$PIP_INDEX_OPT" in
+	off | default | none) unset PIP_INDEX_URL; echo "pip：不设镜像（pypi.org${PROXY_URL:+，经代理}）" ;;
+	"")
+		if [ -n "${PIP_INDEX_URL:-}" ]; then
+			echo "pip：沿用环境变量 PIP_INDEX_URL=$PIP_INDEX_URL"
+		elif [ -z "$PROXY_URL" ]; then
+			export PIP_INDEX_URL="$PIP_INDEX_DEFAULT"
+			echo "pip：PIP_INDEX_URL=$PIP_INDEX_URL（公开加速；--pip-index 可改，off 关掉）"
+		else
+			echo "pip：pypi.org（经代理）"
+		fi
+		;;
+	*) export PIP_INDEX_URL="$PIP_INDEX_OPT"; echo "pip：PIP_INDEX_URL=$PIP_INDEX_URL（来自 --pip-index）" ;;
+esac
+
+# 除了 export，再在 make 命令行上显式传一次（命令行变量会进 MAKEFLAGS，所有子 make、go、pip、wget 都能拿到）
+proxy_make_args
+MAKE_NET_ARGS=("${PROXY_MAKE_ARGS[@]}")
+[ -z "${GOPROXY:-}" ] || MAKE_NET_ARGS+=("GOPROXY=$GOPROXY")
+[ -z "${PIP_INDEX_URL:-}" ] || MAKE_NET_ARGS+=("PIP_INDEX_URL=$PIP_INDEX_URL")
 
 case "$OS_ID:$OS_VER" in
 	ubuntu:24.04) echo "系统：$OS_NAME（和 CI 相同）" ;;
@@ -419,10 +456,10 @@ fi
 
 # ---------- 下载 ----------
 step "make download（日志 logs/download.log）"
-if ! make download -j8 > "$LOG_DIR/download.log" 2>&1; then
+if ! make download -j8 "${MAKE_NET_ARGS[@]}" > "$LOG_DIR/download.log" 2>&1; then
 	echo "并行下载有失败，单线程重试："
 	grep -E 'ERROR:' "$LOG_DIR/download.log" || true
-	if ! make download -j1 V=s > "$LOG_DIR/download-verbose.log" 2>&1; then
+	if ! make download -j1 V=s "${MAKE_NET_ARGS[@]}" > "$LOG_DIR/download-verbose.log" 2>&1; then
 		grep -E 'ERROR:|No more mirrors|Download failed' "$LOG_DIR/download-verbose.log" || true
 		tail -n 60 "$LOG_DIR/download-verbose.log"
 		die "make download 失败，完整日志：$LOG_DIR/download-verbose.log"
@@ -437,14 +474,14 @@ PKG_LOG_DIR="$LOG_DIR/packages"
 FILTER='^ make\[[0-9]+\] |ERROR:|^make\[[0-9]+\]: \*\*\*|^make: \*\*\*'
 START=$(date +%s)
 set +e
-make -j"$JOBS" "${MAKE_GO_ARGS[@]}" BUILD_LOG=1 BUILD_LOG_DIR="$PKG_LOG_DIR" 2>&1 | tee "$LOG_DIR/build.log" | grep --line-buffered -E "$FILTER"
+make -j"$JOBS" "${MAKE_NET_ARGS[@]}" BUILD_LOG=1 BUILD_LOG_DIR="$PKG_LOG_DIR" 2>&1 | tee "$LOG_DIR/build.log" | grep --line-buffered -E "$FILTER"
 rc=${PIPESTATUS[0]}
 set -e
 
 if [ "$rc" -ne 0 ]; then
 	step "并行编译失败（退出码 $rc），用 make -j1 V=s 重试（日志 logs/build-verbose.log）"
 	set +e
-	make -j1 V=s "${MAKE_GO_ARGS[@]}" BUILD_LOG=1 BUILD_LOG_DIR="$PKG_LOG_DIR" > "$LOG_DIR/build-verbose.log" 2>&1
+	make -j1 V=s "${MAKE_NET_ARGS[@]}" BUILD_LOG=1 BUILD_LOG_DIR="$PKG_LOG_DIR" > "$LOG_DIR/build-verbose.log" 2>&1
 	rc=$?
 	set -e
 fi
@@ -463,8 +500,8 @@ if [ "$rc" -ne 0 ]; then
 		echo "===== ${c#"$LOG_DIR"/} 最后 60 行 ====="
 		tail -n 60 "$c"
 		if grep -qE 'proxy\.golang\.org|sum\.golang\.org|goproxy|dial tcp|i/o timeout|TLS handshake timeout|connection reset|go: .*: (Get|reading) ' "$c"; then
-			echo "提示：看起来是 Go 下载依赖时网络不通。确认 GOPROXY（当前：${GOPROXY:-未设置}）能访问，或加 --proxy / --goproxy 后重跑（不用 --clean）" >&2
-			echo "      自己在源码树里手动 make 时，脚本设的 GOPROXY 不会带过去，要先 export GOPROXY=$GOPROXY_DEFAULT" >&2
+			echo "提示：看起来是 Go 下载依赖时网络不通。当前 GOPROXY=${GOPROXY:-未设置}，代理=$( [ -n "$PROXY_URL" ] && proxy_mask "$PROXY_URL" || echo 未设置)；换 --goproxy 或加/去掉 --proxy 后重跑（不用 --clean）" >&2
+			echo "      自己在源码树里手动 make 时不经过脚本，要先 export GOPROXY=$GOPROXY_AUTO（走代理再 export https_proxy=... http_proxy=...）" >&2
 		fi
 		if grep -qE 'signal: killed|Killed|cannot allocate memory|out of memory' "$c"; then
 			echo "提示：像是内存不够被杀（WSL 默认只给一半内存）。用 -j 4 之类少点线程，或在 .wslconfig 里调大 memory / swap" >&2
