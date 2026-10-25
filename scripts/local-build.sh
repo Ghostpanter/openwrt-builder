@@ -214,6 +214,9 @@ case "$GOPROXY_OPT" in
 		;;
 	*) export GOPROXY="$GOPROXY_OPT"; echo "GOPROXY：$GOPROXY（来自 --goproxy）" ;;
 esac
+# 除了 export，再在 make 命令行上显式传一次（命令行变量会进 MAKEFLAGS，所有子 make 和 go 都能拿到）
+MAKE_GO_ARGS=()
+[ -z "${GOPROXY:-}" ] || MAKE_GO_ARGS=("GOPROXY=$GOPROXY")
 
 case "$OS_ID:$OS_VER" in
 	ubuntu:24.04) echo "系统：$OS_NAME（和 CI 相同）" ;;
@@ -434,14 +437,14 @@ PKG_LOG_DIR="$LOG_DIR/packages"
 FILTER='^ make\[[0-9]+\] |ERROR:|^make\[[0-9]+\]: \*\*\*|^make: \*\*\*'
 START=$(date +%s)
 set +e
-make -j"$JOBS" BUILD_LOG=1 BUILD_LOG_DIR="$PKG_LOG_DIR" 2>&1 | tee "$LOG_DIR/build.log" | grep --line-buffered -E "$FILTER"
+make -j"$JOBS" "${MAKE_GO_ARGS[@]}" BUILD_LOG=1 BUILD_LOG_DIR="$PKG_LOG_DIR" 2>&1 | tee "$LOG_DIR/build.log" | grep --line-buffered -E "$FILTER"
 rc=${PIPESTATUS[0]}
 set -e
 
 if [ "$rc" -ne 0 ]; then
 	step "并行编译失败（退出码 $rc），用 make -j1 V=s 重试（日志 logs/build-verbose.log）"
 	set +e
-	make -j1 V=s BUILD_LOG=1 BUILD_LOG_DIR="$PKG_LOG_DIR" > "$LOG_DIR/build-verbose.log" 2>&1
+	make -j1 V=s "${MAKE_GO_ARGS[@]}" BUILD_LOG=1 BUILD_LOG_DIR="$PKG_LOG_DIR" > "$LOG_DIR/build-verbose.log" 2>&1
 	rc=$?
 	set -e
 fi
@@ -461,6 +464,7 @@ if [ "$rc" -ne 0 ]; then
 		tail -n 60 "$c"
 		if grep -qE 'proxy\.golang\.org|sum\.golang\.org|goproxy|dial tcp|i/o timeout|TLS handshake timeout|connection reset|go: .*: (Get|reading) ' "$c"; then
 			echo "提示：看起来是 Go 下载依赖时网络不通。确认 GOPROXY（当前：${GOPROXY:-未设置}）能访问，或加 --proxy / --goproxy 后重跑（不用 --clean）" >&2
+			echo "      自己在源码树里手动 make 时，脚本设的 GOPROXY 不会带过去，要先 export GOPROXY=$GOPROXY_DEFAULT" >&2
 		fi
 		if grep -qE 'signal: killed|Killed|cannot allocate memory|out of memory' "$c"; then
 			echo "提示：像是内存不够被杀（WSL 默认只给一半内存）。用 -j 4 之类少点线程，或在 .wslconfig 里调大 memory / swap" >&2

@@ -167,7 +167,15 @@ chmod +x scripts/*.sh && git config core.fileMode false   # 第一次：加执�
 
    - WSL2 默认（NAT 网络）里 `127.0.0.1` 是 WSL 自己，不是 Windows：请填 Windows 或路由器的局域网 IP，并在 Clash 打开「允许局域网」（或在 `.wslconfig` 设 `networkingMode=mirrored`）。建议用 Clash 的 HTTP / mixed 端口，wget 不支持 socks5。
    - 密码里有 `@ : / #` 等字符要写成 `%40 %3A %2F %23`。**不要把带密码的地址写进仓库、脚本或 issue**；直接写在命令行会留在 `~/.bash_history`，可以在命令前加一个空格（Ubuntu 默认 `HISTCONTROL=ignoreboth` 不记录），或者 `read -rs PROXY && export PROXY` 输入后再运行脚本。
-7. **Go 包（crowdsec-firewall-bouncer、adguardhome、tailscale、mosdns 等约 20 个）在编译阶段才用 go 下载依赖**，`make download` 不管这一步，国内直连 `proxy.golang.org` 常超时，表现为 `ERROR: package/feeds/packages/<包> failed to build`。`local-build.sh` 默认设 `GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct`（shell 里已 export `GOPROXY` 就沿用；`--goproxy URL` 自定义，`--goproxy off` 不设）。失败时脚本会打印失败包 `logs/packages/.../compile.txt` 的最后 60 行，真正的报错在那里。修好网络后直接重跑同一条命令即可（增量，不用 `--clean`）；只重编一个包：`cd build/x86_64/openwrt && make package/feeds/packages/crowdsec-firewall-bouncer/compile -j1 V=s`。
+7. **Go 包（crowdsec-firewall-bouncer、adguardhome、tailscale、mosdns 等约 20 个）在编译阶段才用 go 下载依赖**，`make download` 不管这一步，国内直连 `proxy.golang.org` 常超时，表现为 `ERROR: package/feeds/packages/<包> failed to build`。`local-build.sh` 默认设 `GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct`（shell 里已 export `GOPROXY` 就沿用；`--goproxy URL` 自定义，`--goproxy off` 不设）。失败时脚本会打印失败包 `logs/packages/.../compile.txt` 的最后 60 行，真正的报错在那里。修好网络后直接重跑同一条命令即可（增量，不用 `--clean`）；**自己进源码树手动 `make` 时不会经过脚本，GOPROXY 要自己 export**，否则还是连 `proxy.golang.org`。只重编一个包：
+
+   ```bash
+   export GOPROXY=https://goproxy.cn,direct
+   cd ~/openwrt-builder/build/x86_64/openwrt
+   make package/feeds/packages/crowdsec-firewall-bouncer/{clean,compile} -j1 V=s
+   ```
+
+   单个包好了以后，回仓库根目录重跑 `./scripts/local-build.sh --proxy ... x86` 继续编剩下的（增量）。
 
 ### CI 缓存：本地编译后上传给 Actions 用
 
