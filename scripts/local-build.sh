@@ -35,6 +35,10 @@ usage() {
                       make download（wget/curl）都继承；--deps 时 apt 用临时配置走同一代理，用完删除。
                       不改 git config --global，也不在 /etc/apt 留永久配置。
                       不给 --proxy 时，shell 里已有的 https_proxy / http_proxy 照样生效（apt 也会用）
+  --goproxy URL       Go 模块代理（GOPROXY）。约 20 个 Go 包（crowdsec-firewall-bouncer、adguardhome、
+                      tailscale、mosdns 等）在「编译」阶段才用 go 下载依赖，make download 不管这一步。
+                      默认 https://goproxy.cn,https://proxy.golang.org,direct（国内能直连）；
+                      shell 里已 export GOPROXY 时沿用它；--goproxy off 表示不设、用 Go 自己的默认值
   -h, --help          显示本帮助
 
 目录（都在仓库的 build/ 下，已加入 .gitignore）：
@@ -82,6 +86,8 @@ CLEAN=0
 CONFIG_ONLY=0
 MENUCONFIG=0
 DEPS=0
+GOPROXY_OPT=""
+GOPROXY_DEFAULT="https://goproxy.cn,https://proxy.golang.org,direct"
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -94,6 +100,8 @@ while [ $# -gt 0 ]; do
 		--deps) DEPS=1 ;;
 		--proxy) [ $# -ge 2 ] || die "--proxy 后面要跟代理地址，例如 http://192.168.31.246:7890"; PROXY_URL="$2"; shift ;;
 		--proxy=*) PROXY_URL="${1#--proxy=}"; [ -n "$PROXY_URL" ] || die "--proxy= 后面要跟代理地址" ;;
+		--goproxy) [ $# -ge 2 ] || die "--goproxy 后面要跟地址，例如 https://goproxy.cn,direct，或 off"; GOPROXY_OPT="$2"; shift ;;
+		--goproxy=*) GOPROXY_OPT="${1#--goproxy=}"; [ -n "$GOPROXY_OPT" ] || die "--goproxy= 后面要跟地址或 off" ;;
 		-*) die "未知选项 $1（看 --help）" ;;
 		*)
 			[ -z "$DEVICE" ] || die "只能指定一个机型"
@@ -191,6 +199,21 @@ fi
 
 # 代理（--proxy / PROXY / 已有环境变量），之后的 git / wget / curl / apt 都走它
 proxy_apply
+
+# Go 模块代理：OpenWrt 的 golang-package.mk 会透传环境里的 GOPROXY / GOSUMDB。
+# Go 包在编译时才 go mod download，国内直连 proxy.golang.org 经常超时，包就 "failed to build"。
+case "$GOPROXY_OPT" in
+	off | default | none) unset GOPROXY; echo "GOPROXY：不设置（Go 默认 proxy.golang.org）" ;;
+	"")
+		if [ -n "${GOPROXY:-}" ]; then
+			echo "GOPROXY：沿用环境变量 $GOPROXY"
+		else
+			export GOPROXY="$GOPROXY_DEFAULT"
+			echo "GOPROXY：$GOPROXY（Go 包编译时下载依赖用；--goproxy off 可关掉）"
+		fi
+		;;
+	*) export GOPROXY="$GOPROXY_OPT"; echo "GOPROXY：$GOPROXY（来自 --goproxy）" ;;
+esac
 
 case "$OS_ID:$OS_VER" in
 	ubuntu:24.04) echo "系统：$OS_NAME（和 CI 相同）" ;;
@@ -430,6 +453,19 @@ if [ "$rc" -ne 0 ]; then
 	grep -hE 'ERROR: .* failed to build' "$LOG_DIR/build.log" "$V" | sort -u || true
 	echo "===== logs/packages 里的 error.txt ====="
 	find "$PKG_LOG_DIR" -name error.txt -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; 2>/dev/null || true
+	# 失败包自己的 compile.txt 末尾才有真正的编译器 / go 报错
+	while IFS= read -r e; do
+		c="$(dirname "$e")/compile.txt"
+		[ -f "$c" ] || continue
+		echo "===== ${c#"$LOG_DIR"/} 最后 60 行 ====="
+		tail -n 60 "$c"
+		if grep -qE 'proxy\.golang\.org|sum\.golang\.org|goproxy|dial tcp|i/o timeout|TLS handshake timeout|connection reset|go: .*: (Get|reading) ' "$c"; then
+			echo "提示：看起来是 Go 下载依赖时网络不通。确认 GOPROXY（当前：${GOPROXY:-未设置}）能访问，或加 --proxy / --goproxy 后重跑（不用 --clean）" >&2
+		fi
+		if grep -qE 'signal: killed|Killed|cannot allocate memory|out of memory' "$c"; then
+			echo "提示：像是内存不够被杀（WSL 默认只给一半内存）。用 -j 4 之类少点线程，或在 .wslconfig 里调大 memory / swap" >&2
+		fi
+	done < <(find "$PKG_LOG_DIR" -name error.txt 2>/dev/null)
 	first=$(grep -nE 'ERROR: .* failed to build' "$V" | head -n 1 | cut -d: -f1)
 	before=80
 	if [ -z "$first" ]; then
