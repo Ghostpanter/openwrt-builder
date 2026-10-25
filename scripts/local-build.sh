@@ -107,23 +107,114 @@ fi
 
 # ---------- 环境检查 ----------
 step "检查系统环境"
+case "$(uname -s)" in
+	MINGW* | MSYS* | CYGWIN*)
+		die "这是 Windows 的 Git Bash / MSYS，不能编译 OpenWrt。请在 WSL 里运行：先在 PowerShell 执行 wsl -d Debian 进入 Linux，再 cd ~/openwrt-builder 运行本脚本" ;;
+esac
+
+# ---- 本机 Linux 还是 WSL ----
+IS_WSL=0
+if [ -n "${WSL_DISTRO_NAME:-}" ] || [ -e /proc/sys/fs/binfmt_misc/WSLInterop ] ||
+	grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null || uname -r | grep -qiE 'microsoft|wsl'; then
+	IS_WSL=1
+fi
+
+OS_ID=unknown
+OS_VER=""
+OS_NAME="未知系统"
 if [ -r /etc/os-release ]; then
 	# shellcheck disable=SC1091
 	. /etc/os-release
-	if [ "${ID:-}" != "ubuntu" ] || [ "${VERSION_ID:-}" != "24.04" ]; then
-		warn "当前系统是 ${PRETTY_NAME:-未知}，CI 用的是 Ubuntu 24.04，其他版本可能缺包或工具链太旧"
-	else
-		echo "系统：$PRETTY_NAME"
-	fi
+	OS_ID="${ID:-unknown}"
+	OS_VER="${VERSION_ID:-}"
+	OS_NAME="${PRETTY_NAME:-$OS_ID $OS_VER}"
 fi
+
+if [ "$IS_WSL" -eq 1 ]; then
+	echo "环境：WSL（$OS_NAME，发行版 ${WSL_DISTRO_NAME:-未知}，内核 $(uname -r)）"
+	# WSL2 的内核版本号里带 microsoft-standard / WSL2；WSL1 是 4.4.0-xxxxx-Microsoft 这种
+	if ! uname -r | grep -qiE 'microsoft-standard|wsl2'; then
+		die "看起来是 WSL1（内核 $(uname -r)）。WSL1 文件系统太慢且有兼容问题，OpenWrt 基本编不过。请在 PowerShell 执行：wsl --set-version ${WSL_DISTRO_NAME:-Debian} 2"
+	fi
+	# 绝不能在 /mnt/c、/mnt/e 这类 Windows 盘（NTFS）上编译：大小写不敏感、权限/软链接不对、慢几十倍
+	for d in "$REPO_ROOT" "$REPO_ROOT/build"; do
+		case "$d/" in
+			/mnt/*)
+				die "仓库在 Windows 盘上（$REPO_ROOT）。请放到 WSL 自己的 Linux 文件系统里，例如：
+    cd ~ && git clone https://github.com/Ghostpanter/openwrt-builder.git && cd openwrt-builder
+（Debian 装在 E: 盘只是虚拟磁盘文件 ext4.vhdx 放在 E:，WSL 里的 ~ 和 /home 仍然是 Linux ext4，可以编译；/mnt/e 才是 NTFS，不行）" ;;
+		esac
+	done
+	FS_TYPE=$(stat -f -c %T "$REPO_ROOT" 2>/dev/null || echo unknown)
+	case "$FS_TYPE" in
+		v9fs | 9p | drvfs | fuseblk | ntfs* | msdos | vfat | exfat)
+			die "仓库所在文件系统是 $FS_TYPE（Windows 盘），不能编译；请把仓库克隆到 ~ 下" ;;
+	esac
+	# Windows 的 PATH（/mnt/c/Program Files/... 带空格、括号）会把 OpenWrt 的编译搞坏，编译时去掉
+	if printf '%s' "$PATH" | tr ':' '\n' | grep -q '^/mnt/'; then
+		PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '^/mnt/' | paste -sd: -)
+		export PATH
+		echo "已从 PATH 去掉 Windows 路径（/mnt/...），避免空格/括号导致编译出错；想永久关掉可在 /etc/wsl.conf 写 [interop] appendWindowsPath=false"
+	fi
+	# 内存：WSL2 默认只用 Windows 内存的一半
+	MEM_GB=$(awk '/^MemTotal:/{printf "%d", $2/1024/1024 + 0.5}' /proc/meminfo)
+	SWAP_GB=$(awk '/^SwapTotal:/{printf "%d", $2/1024/1024 + 0.5}' /proc/meminfo)
+	echo "WSL 可用内存 ${MEM_GB} GB，swap ${SWAP_GB} GB，CPU $(nproc) 线程"
+	if [ "${MEM_GB:-0}" -lt 16 ]; then
+		warn "WSL 内存不足 16 GB，x86_64（node、rust、内核）多线程编译可能被 OOM 杀掉。可在 Windows 的 %UserProfile%\\.wslconfig 里写：
+    [wsl2]
+    memory=16GB
+    swap=16GB
+然后 PowerShell 执行 wsl --shutdown 再进来；或者用 -j 4 少开线程"
+	fi
+	echo "提醒：WSL 的虚拟磁盘（ext4.vhdx）放在安装发行版的那个 Windows 盘（例如 E:），编译会让它涨到 100 GB 以上，请确认该盘空间足够"
+	for m in /mnt/[c-z]; do
+		[ -d "$m" ] && mountpoint -q "$m" 2>/dev/null || continue
+		echo "  Windows 盘 ${m#/mnt/}: 剩余 $(df -h --output=avail "$m" 2>/dev/null | tail -n 1 | tr -d ' ')"
+	done
+else
+	echo "环境：本机 Linux（$OS_NAME，内核 $(uname -r)）"
+fi
+
+case "$OS_ID:$OS_VER" in
+	ubuntu:24.04) echo "系统：$OS_NAME（和 CI 相同）" ;;
+	debian:12 | debian:13) echo "系统：$OS_NAME（支持；依赖包名会自动换成 Debian 的）" ;;
+	*) warn "当前系统是 $OS_NAME，推荐 Ubuntu 24.04 或 Debian 12/13，其他版本可能缺包或工具太旧" ;;
+esac
 
 if [ "$DEPS" -eq 1 ]; then
 	step "安装编译依赖（sudo apt）"
 	DEP_LIST=$(wf_deps)
 	[ -n "$DEP_LIST" ] || die "没能从 workflow 读到依赖列表"
+	if [ "$OS_ID" = debian ]; then
+		# Debian 里这几个是虚包名，换成实际的包；Debian 12 默认 clang 14 太旧，另装 clang/lld/llvm 16
+		DEP_LIST=$(printf ' %s ' "$DEP_LIST" | sed 's/ gnutls-dev / libgnutls28-dev /; s/ libz-dev / zlib1g-dev /; s/ mkisofs / genisoimage /')
+		[ "$OS_VER" != 12 ] || DEP_LIST="$DEP_LIST clang-16 lld-16 llvm-16"
+	fi
 	sudo apt-get update -y
 	# shellcheck disable=SC2086
-	sudo apt-get install -y $DEP_LIST
+	if ! sudo apt-get install -y $DEP_LIST; then
+		# 某个包名在这个系统上不存在时，逐个安装，最后列出装不上的
+		warn "一次性安装失败，改为逐个安装"
+		FAILED=""
+		for pkg in $DEP_LIST; do
+			sudo apt-get install -y "$pkg" > /dev/null 2>&1 || FAILED="$FAILED $pkg"
+		done
+		[ -z "$FAILED" ] || warn "以下包没装上（大多数不影响编译，编译报缺什么再手动装）：$FAILED"
+	fi
+fi
+
+# Debian 12 等默认 clang 太旧时，用 /usr/lib/llvm-N/bin 里更新的版本
+if ! command -v clang >/dev/null 2>&1 || [ "$(clang -dumpversion | cut -d. -f1)" -lt 15 ]; then
+	for d in $(ls -1d /usr/lib/llvm-*/bin 2>/dev/null | sort -t- -k2 -n -r); do
+		v=${d#/usr/lib/llvm-}; v=${v%/bin}
+		if [ "$v" -ge 15 ] 2>/dev/null && [ -x "$d/clang" ]; then
+			PATH="$d:$PATH"
+			export PATH
+			echo "使用 $d 里的 clang $v"
+			break
+		fi
+	done
 fi
 
 # 内核 6.18（x86_64）的 bpf-headers 要求宿主机 clang >= 15
@@ -131,7 +222,7 @@ if command -v clang >/dev/null 2>&1; then
 	CLANG_MAJOR=$(clang -dumpversion | cut -d. -f1)
 	if [ "$CLANG_MAJOR" -lt 15 ]; then
 		if [ "$DEVICE" = "x86_64" ]; then
-			die "clang $CLANG_MAJOR 太旧，x86_64（内核 6.18）的 bpf-headers 至少要 clang 15；请用 Ubuntu 24.04"
+			die "clang $CLANG_MAJOR 太旧，x86_64（内核 6.18）的 bpf-headers 至少要 clang 15；Ubuntu 24.04 / Debian 13 自带的就够，Debian 12 运行 --deps 会装 clang-16"
 		fi
 		warn "clang $CLANG_MAJOR 低于 15，x86_64 会编不过"
 	else
