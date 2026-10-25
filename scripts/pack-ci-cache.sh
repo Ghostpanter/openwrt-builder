@@ -4,6 +4,8 @@
 set -euo pipefail
 
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=lib/proxy.sh
+. "$REPO_ROOT/scripts/lib/proxy.sh"
 
 usage() {
 	cat <<'USAGE'
@@ -23,6 +25,7 @@ usage() {
   --with-dl           另外打包 dl/（源码包，3–4 GB，通常从镜像下载也不慢，按需）
   -l, --level N       zstd 压缩级别 1–19，默认 10（19 更小但慢很多）
   -o DIR              输出目录，默认 build/ci-cache/<机型>-<上游短SHA>
+  --proxy URL         接受但用不到：打包完全在本地，不联网（方便和其他脚本写同一串参数）
   --force             系统 glibc 比 CI（Ubuntu 24.04，glibc 2.39）新时也打包（CI 用不上，一般不需要）
   -h, --help          显示本帮助
 
@@ -53,12 +56,15 @@ while [ $# -gt 0 ]; do
 		-l | --level) [ $# -ge 2 ] || die "$1 后面要跟级别"; LEVEL="$2"; shift ;;
 		--force) FORCE=1 ;;
 		-o) [ $# -ge 2 ] || die "-o 后面要跟目录"; OUT="$2"; shift ;;
+		--proxy) [ $# -ge 2 ] || die "--proxy 后面要跟代理地址"; PROXY_URL="$2"; shift ;;
+		--proxy=*) PROXY_URL="${1#--proxy=}" ;;
 		-*) die "未知选项 $1（看 --help）" ;;
 		*) [ -z "$TARGET" ] || die "只能指定一个机型或目录"; TARGET="$1" ;;
 	esac
 	shift
 done
 [ -n "$TARGET" ] || { usage; exit 1; }
+[ -z "$PROXY_URL" ] || echo "提示：打包不联网，--proxy 不起作用（上传时给 upload-ci-cache.sh 加 --proxy）"
 case "$LEVEL" in '' | *[!0-9]*) die "压缩级别要是 1–19 的数字" ;; esac
 [ "$LEVEL" -ge 1 ] && [ "$LEVEL" -le 19 ] || die "压缩级别要在 1–19 之间"
 for c in tar zstd split sha256sum git; do
@@ -187,3 +193,4 @@ ls -lh "$OUT"
 echo
 echo "总大小：$(du -sh "$OUT" | cut -f1)。下一步上传到 GitHub Release（tag：ci-cache-$DEVICE-$SHA）："
 echo "  ./scripts/upload-ci-cache.sh $DEVICE"
+echo "  （要走代理：./scripts/upload-ci-cache.sh --proxy http://代理IP:端口 $DEVICE）"

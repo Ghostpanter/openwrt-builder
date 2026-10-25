@@ -9,6 +9,8 @@
 set -euo pipefail
 
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=lib/proxy.sh
+. "$REPO_ROOT/scripts/lib/proxy.sh"
 WORKFLOW="$REPO_ROOT/.github/workflows/build.yml"
 
 usage() {
@@ -26,6 +28,13 @@ usage() {
   --config-only       只做到 make defconfig（含 --menuconfig），不下载、不编译
   --menuconfig        make defconfig 之后打开 make menuconfig 手动调整
   --deps              先用 sudo apt 安装编译依赖（列表同 workflow），只给这个参数不给机型就只装依赖
+  --proxy URL         走代理（也可写 --proxy=URL，或事先 export PROXY=URL），例如
+                        http://192.168.31.246:7890            Clash 不带认证
+                        http://用户名:密码@192.168.31.246:7893  Clash 带认证（密码特殊字符要 % 编码）
+                      会设置 http_proxy / https_proxy / all_proxy（含大写），git 克隆、feeds update、
+                      make download（wget/curl）都继承；--deps 时 apt 用临时配置走同一代理，用完删除。
+                      不改 git config --global，也不在 /etc/apt 留永久配置。
+                      不给 --proxy 时，shell 里已有的 https_proxy / http_proxy 照样生效（apt 也会用）
   -h, --help          显示本帮助
 
 目录（都在仓库的 build/ 下，已加入 .gitignore）：
@@ -40,6 +49,8 @@ usage() {
   ./scripts/local-build.sh ys                # 编亚瑟
   ./scripts/local-build.sh -j 8 ydn          # 8 线程编雅典娜
   ./scripts/local-build.sh --config-only --menuconfig x86   # 只看/调配置
+  ./scripts/local-build.sh --proxy http://192.168.31.246:7890 --deps          # 走代理装依赖
+  ./scripts/local-build.sh --proxy http://user:pass@192.168.31.246:7893 x86   # 走带认证的代理编译
 
 注意：不要用 root 运行（OpenWrt 拒绝 root 编译）；磁盘建议至少 100 GB 空闲。
 USAGE
@@ -49,7 +60,7 @@ die() { echo "错误：$*" >&2; exit 1; }
 warn() { echo "警告：$*" >&2; }
 STEP="准备"
 step() { STEP="$1"; echo; echo "==> $1"; }
-trap 'rc=$?; [ "$rc" -eq 0 ] || [ "$STEP" = "准备" ] || echo "失败于步骤：$STEP（退出码 $rc）" >&2' EXIT
+trap 'rc=$?; proxy_cleanup; [ "$rc" -eq 0 ] || [ "$STEP" = "准备" ] || echo "失败于步骤：$STEP（退出码 $rc）" >&2' EXIT
 
 # 从 workflow 读 KEY="value"（check job 里的 IMMORTAL_URL 等）
 wf_var() {
@@ -81,6 +92,8 @@ while [ $# -gt 0 ]; do
 		--config-only) CONFIG_ONLY=1 ;;
 		--menuconfig) MENUCONFIG=1 ;;
 		--deps) DEPS=1 ;;
+		--proxy) [ $# -ge 2 ] || die "--proxy 后面要跟代理地址，例如 http://192.168.31.246:7890"; PROXY_URL="$2"; shift ;;
+		--proxy=*) PROXY_URL="${1#--proxy=}"; [ -n "$PROXY_URL" ] || die "--proxy= 后面要跟代理地址" ;;
 		-*) die "未知选项 $1（看 --help）" ;;
 		*)
 			[ -z "$DEVICE" ] || die "只能指定一个机型"
@@ -176,6 +189,9 @@ else
 	echo "环境：本机 Linux（$OS_NAME，内核 $(uname -r)）"
 fi
 
+# 代理（--proxy / PROXY / 已有环境变量），之后的 git / wget / curl / apt 都走它
+proxy_apply
+
 case "$OS_ID:$OS_VER" in
 	ubuntu:24.04) echo "系统：$OS_NAME（和 CI 相同）" ;;
 	debian:12 | debian:13) echo "系统：$OS_NAME（支持；依赖包名会自动换成 Debian 的）" ;;
@@ -191,17 +207,25 @@ if [ "$DEPS" -eq 1 ]; then
 		DEP_LIST=$(printf ' %s ' "$DEP_LIST" | sed 's/ gnutls-dev / libgnutls28-dev /; s/ libz-dev / zlib1g-dev /; s/ mkisofs / genisoimage /')
 		[ "$OS_VER" != 12 ] || DEP_LIST="$DEP_LIST clang-16 lld-16 llvm-16"
 	fi
-	sudo apt-get update -y
+	# apt 不读 http_proxy（sudo 也会清掉环境变量）：有代理时用临时配置文件传给 apt（-c），退出时删除
+	APT=(sudo apt-get)
+	proxy_apt_conf
+	if [ -n "$PROXY_APT_CONF" ]; then
+		APT+=(-c "$PROXY_APT_CONF")
+		echo "apt 走代理 $(proxy_mask "$PROXY_URL")（临时配置，用完删除）"
+	fi
+	"${APT[@]}" update -y
 	# shellcheck disable=SC2086
-	if ! sudo apt-get install -y $DEP_LIST; then
+	if ! "${APT[@]}" install -y $DEP_LIST; then
 		# 某个包名在这个系统上不存在时，逐个安装，最后列出装不上的
 		warn "一次性安装失败，改为逐个安装"
 		FAILED=""
 		for pkg in $DEP_LIST; do
-			sudo apt-get install -y "$pkg" > /dev/null 2>&1 || FAILED="$FAILED $pkg"
+			"${APT[@]}" install -y "$pkg" > /dev/null 2>&1 || FAILED="$FAILED $pkg"
 		done
 		[ -z "$FAILED" ] || warn "以下包没装上（大多数不影响编译，编译报缺什么再手动装）：$FAILED"
 	fi
+	proxy_cleanup
 fi
 
 # Debian 12 等默认 clang 太旧时，用 /usr/lib/llvm-N/bin 里更新的版本

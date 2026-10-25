@@ -5,6 +5,8 @@
 set -euo pipefail
 
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=lib/proxy.sh
+. "$REPO_ROOT/scripts/lib/proxy.sh"
 
 usage() {
 	cat <<'USAGE'
@@ -15,10 +17,19 @@ usage() {
 
 选项：
   --repo OWNER/NAME   上传到哪个仓库，默认取本仓库 git remote origin
+  --proxy URL         走代理（也可 --proxy=URL 或 export PROXY=URL），例如 http://192.168.31.246:7890，
+                      带认证：http://用户名:密码@192.168.31.246:7893（密码特殊字符要 % 编码）。
+                      只对本次运行的 gh 生效（设置 https_proxy 等环境变量），不改 gh / git 的全局配置；
+                      不给时 shell 里已有的 https_proxy 照样生效
   --prune             上传成功后删掉该机型其他（旧上游 SHA 的）ci-cache Release，节省空间
   -h, --help          显示本帮助
 
 需要 GitHub CLI 并已登录：sudo apt install gh && gh auth login
+（gh auth login 本身也要联网，可先 export https_proxy=http://代理IP:端口 再登录）
+
+示例：
+  ./scripts/upload-ci-cache.sh x86
+  ./scripts/upload-ci-cache.sh --proxy http://192.168.31.246:7890 x86
 USAGE
 }
 
@@ -32,14 +43,17 @@ while [ $# -gt 0 ]; do
 		-h | --help) usage; exit 0 ;;
 		--repo) [ $# -ge 2 ] || die "--repo 后面要跟 OWNER/NAME"; REPO="$2"; shift ;;
 		--prune) PRUNE=1 ;;
+		--proxy) [ $# -ge 2 ] || die "--proxy 后面要跟代理地址，例如 http://192.168.31.246:7890"; PROXY_URL="$2"; shift ;;
+		--proxy=*) PROXY_URL="${1#--proxy=}"; [ -n "$PROXY_URL" ] || die "--proxy= 后面要跟代理地址" ;;
 		-*) die "未知选项 $1（看 --help）" ;;
 		*) [ -z "$TARGET" ] || die "只能指定一个机型或目录"; TARGET="$1" ;;
 	esac
 	shift
 done
 [ -n "$TARGET" ] || { usage; exit 1; }
+proxy_apply
 command -v gh >/dev/null || die "没有 gh 命令：sudo apt install gh，然后 gh auth login"
-gh auth status >/dev/null 2>&1 || die "gh 还没登录：先运行 gh auth login"
+gh auth status >/dev/null 2>&1 || die "gh 还没登录（或连不上 GitHub）：先运行 gh auth login；网络不通时加 --proxy http://代理IP:端口"
 
 DEVICE=""
 case "$TARGET" in
