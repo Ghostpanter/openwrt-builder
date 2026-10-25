@@ -183,6 +183,16 @@ jobs:
             fi
           done
 
+      # 本地编译后上传的缓存（scripts/pack-ci-cache.sh + upload-ci-cache.sh → 预发布 Release ci-cache-<机型>-<上游短SHA>）：
+      # 优先级高于下面的 Actions 缓存。有上游 SHA 完全一致的就用它，否则用该机型最新的一个（增量）；没有就跳过。
+      # 恢复了工具链就不再恢复 / 重复保存 Actions 的工具链缓存；ccache 会和 Actions 的 ccache 合并。
+      - name: 恢复缓存：本地上传的 Release（ci-cache）
+        id: relcache
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/restore-ci-cache.sh "${{ matrix.device }}" "$UPSTREAM_SHA" openwrt
+
       # 缓存分三份，键 = 种类-机型-上游短SHA，上游变了按机型回退到最近一份（相当于本地 git pull 后增量编译）：
       #   dl         源码包；下载完立刻保存
       #   toolchain  编译机工具 staging_dir/host + build_dir/host，交叉工具链 staging_dir/toolchain-* + build_dir/toolchain-*；
@@ -191,6 +201,7 @@ jobs:
       # 用 cache/restore + cache/save 分开写，是因为 actions/cache 只在 job 成功时保存，超时失败就什么都存不下。
       - name: 恢复缓存：dl
         id: cache-dl
+        if: steps.relcache.outputs.dl != 'true'
         uses: actions/cache/restore@v4
         with:
           path: openwrt/dl
@@ -199,6 +210,7 @@ jobs:
 
       - name: 恢复缓存：工具和工具链
         id: cache-toolchain
+        if: steps.relcache.outputs.toolchain != 'true'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -254,6 +266,7 @@ jobs:
           mkdir -p "$CCACHE_DIR"
           ccache --max-size=8G
           ccache --zero-stats > /dev/null || true
+          echo "Release 缓存：${{ steps.relcache.outputs.tag || '无' }}（toolchain=${{ steps.relcache.outputs.toolchain || 'false' }} ccache=${{ steps.relcache.outputs.ccache || 'false' }} dl=${{ steps.relcache.outputs.dl || 'false' }}）"
           echo "缓存命中：dl=${{ steps.cache-dl.outputs.cache-matched-key || '无' }}"
           echo "          toolchain=${{ steps.cache-toolchain.outputs.cache-matched-key || '无' }}"
           echo "          ccache=${{ steps.cache-ccache.outputs.cache-matched-key || '无' }}（$(du -sh "$CCACHE_DIR" | cut -f1)）"
@@ -277,7 +290,7 @@ jobs:
           echo "下载完成，dl 目录 $(du -sh dl | cut -f1)"
 
       - name: 保存缓存：dl
-        if: steps.cache-dl.outputs.cache-hit != 'true'
+        if: steps.cache-dl.outputs.cache-hit != 'true' && steps.relcache.outputs.dl != 'true'
         uses: actions/cache/save@v4
         with:
           path: openwrt/dl
@@ -300,7 +313,10 @@ jobs:
           fi
 
       - name: 保存缓存：工具和工具链
-        if: steps.toolchain.outputs.ok == 'true' && steps.cache-toolchain.outputs.cache-hit != 'true'
+        # Release 里上游 SHA 完全一致的工具链不再存一份；不一致（增量重编过）才存
+        if: >-
+          steps.toolchain.outputs.ok == 'true' && steps.cache-toolchain.outputs.cache-hit != 'true' &&
+          !(steps.relcache.outputs.toolchain == 'true' && steps.relcache.outputs.exact == 'true')
         uses: actions/cache/save@v4
         with:
           path: |

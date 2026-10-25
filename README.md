@@ -66,6 +66,7 @@
   - 上游更新后找不到同 SHA 的缓存，会退回用同机型最近一份，相当于本地 `git pull` 后增量编译
 - **大小风险**：GitHub 每个仓库缓存总共约 10GB，超了按「最久没用」自动删。x86_64 一台的三份缓存压缩后大约 6–8GB，三台一起编可能超额，导致别的机型缓存被挤掉（只影响速度，不影响结果）。如果经常被挤掉，可以考虑不缓存 `build_dir/host`（但工具会重编约 25 分钟），或在 Actions → Caches 里手动删。
 - **本地编译没有 6 小时限制**，见下面「本地编译」，源码目录本身就是增量的。
+- **用本地编译的结果给 CI 提速**：本地编完后把工具链和 ccache 上传到一个专用的预发布 Release（`ci-cache-<机型>-<上游短SHA>`），CI 会优先从那里恢复，见下面「CI 缓存：本地编译后上传给 Actions 用」。
 
 ## 产物在哪
 
@@ -92,7 +93,7 @@
 
 ## 本地编译
 
-不想用 GitHub Actions，也可以在自己的 Ubuntu 上编（推荐 **Ubuntu 24.04**，和 CI 一样；x86_64 的 6.18 内核要求 clang ≥ 15，22.04 自带的 clang 14 不行）。步骤和 CI 完全一致：上游仓库 / 分支、apt 依赖列表都直接从 `.github/workflows/build.yml` 读。
+不想用 GitHub Actions，也可以在自己的 Linux 上编：推荐 **Ubuntu 24.04**（和 CI 一样），也支持 **Debian 12 / 13**（`--deps` 会自动换成 Debian 的包名，Debian 12 另装 clang-16）。x86_64 的 6.18 内核要求 clang ≥ 15，Ubuntu 22.04 自带的 clang 14 不行。Windows 用户见下面「在 Windows / WSL 里编译」。步骤和 CI 完全一致：上游仓库 / 分支、apt 依赖列表都直接从 `.github/workflows/build.yml` 读。
 
 准备：
 
@@ -131,6 +132,57 @@ chmod +x scripts/*.sh && git config core.fileMode false   # 第一次：加执�
 - 控制台只显示进度和报错，完整日志在 `build/<机型>/logs/`：`build.log`、失败时自动 `make -j1 V=s` 重试的 `build-verbose.log`、每个包的 `packages/<包路径>/compile.txt`（失败的包有 `error.txt`），以及 `feeds-*.log`、`download.log`、`defconfig.log`。
 - 编译成功后会打印固件路径，在 `build/<机型>/openwrt/bin/targets/` 下。
 - 不能用 root 运行（OpenWrt 拒绝 root 编译）；磁盘建议至少 100 GB 空闲，不足会提示。
+
+### 在 Windows / WSL 里编译
+
+可以在 Windows 的 **WSL2** 里编（WSL1 不行，脚本会拒绝）。发行版装在哪个盘（例如 E:）随意，那只是虚拟磁盘文件 `ext4.vhdx` 的位置。
+
+1. PowerShell 里进入发行版：`wsl -d Debian`（之后的命令都在 WSL 的 Linux 终端里执行，不要在 PowerShell / cmd / Git Bash 里直接运行脚本）
+2. **仓库必须放在 WSL 自己的 Linux 目录（`~` 或 `/home/...`）**，不能放在 `/mnt/c`、`/mnt/e` 这类 Windows 盘上（NTFS 大小写不敏感、权限不对、慢几十倍，脚本会直接报错）：
+
+   ```bash
+   cd ~
+   git clone https://github.com/Ghostpanter/openwrt-builder.git
+   cd openwrt-builder
+   chmod +x scripts/*.sh && git config core.fileMode false
+   ./scripts/local-build.sh --deps     # 第一次装依赖
+   ./scripts/local-build.sh x86        # 或 ys / ydn
+   ```
+3. 资源：WSL2 默认只用 Windows 一半内存，x86_64 建议 **≥ 16 GB**。在 Windows 的 `%UserProfile%\.wslconfig` 写：
+
+   ```ini
+   [wsl2]
+   memory=16GB
+   swap=16GB
+   ```
+   然后 PowerShell 执行 `wsl --shutdown` 再进入。安装发行版的那个盘（例如 E:）要留 **100 GB 以上**，编译时虚拟磁盘会一直涨。
+4. 脚本会自动识别 WSL（打印「环境：WSL（…）」或「环境：本机 Linux（…）」），并在编译时从 `PATH` 去掉 `/mnt/c/...` 这类 Windows 路径（带空格、括号会让 OpenWrt 编译出错）。
+5. 想把结果上传给 CI 用（下一节）：**Debian 13 的 glibc（2.41）比 CI 的 Ubuntu 24.04（2.39）新，编出来的工具链 CI 用不了**，打包脚本会拒绝。要给 CI 提速，请在 WSL 里装 **Ubuntu 24.04**（最稳）或 **Debian 12** 来编，也可以装在 E:，例如 `wsl --install -d Ubuntu-24.04 --location E:\WSL\Ubuntu-24.04`（老版本 wsl 没有 `--location` 时用 `wsl --export` / `wsl --import` 搬到 E:）。只在本地编固件的话 Debian 13 没问题。
+
+### CI 缓存：本地编译后上传给 Actions 用
+
+x86_64 在 Actions 上第一次编译会撞 6 小时上限（node 一个包就要近 3 小时）。可以先在本地编一遍，把最耗时的部分上传到本仓库的一个**预发布 Release**（不是固件，不进 git 历史），之后 Actions 自动下载复用：
+
+```bash
+./scripts/local-build.sh x86        # 1. 本地完整编译一遍（ys / ydn 同理）
+./scripts/pack-ci-cache.sh x86      # 2. 打包到 build/ci-cache/x86_64-<上游短SHA>/
+sudo apt install gh && gh auth login   # 3. 第一次：安装并登录 GitHub CLI
+./scripts/upload-ci-cache.sh x86    # 4. 上传到 Release ci-cache-x86_64-<上游短SHA>
+```
+
+然后去 Actions 手动 **Run workflow**，机型选 `x86_64`，**勾选 force**。
+
+- **上传了什么**（每个文件按 1900 MB 切片，GitHub Release 单文件上限 2 GB）：
+  - `toolchain.tar.zst.partNN`：`staging_dir/host`、`staging_dir/toolchain-*`、`build_dir/host`、`build_dir/toolchain-*`（编译机工具 + 交叉工具链，约 1.5 GB），CI 恢复后「编译工具和工具链」一步只要几分钟
+  - `ccache.tar.zst.partNN`：本地的 ccache（约 2–3 GB），node、内核、rust 等 C/C++ 编译大量命中（`--no-ccache` 不打包）
+  - `dl.tar.zst.partNN`：源码包（3–4 GB，默认不打包，`--with-dl` 才打包）
+  - `ci-cache.env`（机型、上游 SHA、本地源码路径、系统和 glibc 版本）、`SHA256SUMS`
+  - 合计一般 **4–6 GB**（带 dl 约 6–10 GB）；Release 文件不占 Actions 缓存的 10 GB 额度
+- **tag 命名**：`ci-cache-<机型>-<上游短SHA>`，机型是 `x86_64` / `athena` / `arthur`，短 SHA 是 12 位，和 CI 用的一致（x86_64 看 ImmortalWrt master，雅典娜/亚瑟看 LibWrt）。本地源码就是上游最新时，两边 SHA 一样
+- **CI 怎么用**：「恢复缓存：本地上传的 Release（ci-cache）」一步优先找 SHA 完全一致的；上游已经又更新了就用该机型最新的一份（增量，只重编有变化的部分）；一个都没有就跳过。Release 的优先级高于 Actions 缓存，恢复了工具链就不再用 Actions 的工具链缓存；运行页面 Summary 里会写恢复了什么
+- **安全检查**：CI 会校验 SHA256、检查打包机 glibc 不比 runner 新、用 `ldd` 检查所有编译机工具的动态库，有问题就丢弃这份工具链，回到 Actions 缓存 / 从头编，不会让编译失败。本地源码的绝对路径（例如 `/home/你/openwrt-builder/build/x86_64/openwrt`）会写进部分工具里，CI 会在 runner 上把这个路径软链接到自己的源码目录
+- `upload-ci-cache.sh` 可以重复运行：Release 不存在就创建（预发布，标题写明「不是固件」），存在就覆盖同名文件、删掉多余的旧切片；只上传上面这些缓存文件，不会上传固件。加 `--prune` 会删掉同机型其他旧 SHA 的缓存 Release
+- 打包要求：工具和工具链已完整编完（四个目录都在），否则脚本会报错；建议在 Ubuntu 24.04（或 Debian 12）上编，见上一节
 
 ## x86 首次开机自动分区
 
