@@ -75,6 +75,24 @@ if [ -f "$SB_MK" ]; then
   fi
 fi
 
+# perf：上游 Makefile 写死了 NO_LIBZSTD=1，但内核 6.18 的 perf 会检测「libelf 是否需要 zstd」，
+# 检测方法只是试着链接 -lelf -lz -lzstd。整机编译时 libzstd 已经先编好放进 staging（别的包要用），
+# 检测就会通过，再碰上 NO_LIBZSTD=1 直接报错：
+#   Makefile.config:581: *** Error: libzstd is required by libelf, please do not set NO_LIBZSTD.
+# （单独编 perf 时 staging 里还没有 libzstd，检测不通过，所以不报错，看起来像偶发问题。）
+# 修法：去掉 NO_LIBZSTD=1，并让 perf 依赖 libzstd（保证先编 zstd、结果稳定）；
+# libzstd 固件里本来就有，不增加体积，perf 顺带支持 zstd 压缩的 perf.data。
+PERF_MK=package/devel/perf/Makefile
+if [ -f "$PERF_MK" ] && grep -q 'NO_LIBZSTD=1' "$PERF_MK"; then
+  sed -i '/^[[:space:]]*NO_LIBZSTD=1[[:space:]]*\\$/d' "$PERF_MK"
+  grep -q '+libzstd' "$PERF_MK" || sed -i 's/^\([[:space:]]*DEPENDS:=[[:space:]]*+libelf\)/\1 +libzstd/' "$PERF_MK"
+  if grep -q 'NO_LIBZSTD=1' "$PERF_MK" || ! grep -q '+libzstd' "$PERF_MK"; then
+    echo "错误：没能给 perf 去掉 NO_LIBZSTD / 加上 libzstd 依赖，请检查 $PERF_MK" >&2
+    exit 1
+  fi
+  echo "perf：已去掉 NO_LIBZSTD，依赖 libzstd"
+fi
+
 # 删掉了 feeds 里的 mosdns，重建索引，避免 feeds install 时出现重名包
 ./scripts/feeds update -i packages
 
