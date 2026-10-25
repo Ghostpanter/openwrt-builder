@@ -53,7 +53,19 @@
 
 当前 **仅启用 `workflow_dispatch`**；每天定时检查在 workflow 里默认注释掉，需要时自行打开。
 
-首次编译约 3–4 小时（x86 插件多，含 Node.js、perf、gdb、samba4 等）；之后有 `dl/` 和 ccache 缓存会快一些。
+首次编译 x86_64 要将近 6 小时（插件多，含 Node.js、Rust、perf、gdb、samba4、ffmpeg 等），雅典娜/亚瑟短得多。
+
+### 编译时间、6 小时上限和缓存
+
+- **为什么会撞 6 小时**：GitHub 单个 job 最多跑 6 小时，到点直接被杀。x86_64 第一次全量编译时，光 `package/feeds/packages/node` 就编了约 2 小时 52 分钟，其次是 Rust 编译机端约 63 分钟、内核约 25 分钟、ffmpeg 约 22 分钟。Node.js 只被「网易云解锁」`luci-app-unblockneteasemusic` 拉进来（daed 不依赖它），所以编到最后打包阶段时超时了。
+- **现在的处理**：job 开始约 5 小时 35 分钟时，「编译」一步会主动停下（不再等被强杀），留出时间保存缓存和上传日志，Summary 里会写「编译时间不够，已主动停止」。这时**再 Run workflow 一次**，会用缓存接着编，第二次快很多。
+- **缓存了什么**（Actions → Caches 里能看到，键都带机型和对应上游短 SHA：x86_64 看 ImmortalWrt，雅典娜/亚瑟看 LibWrt）：
+  - `dl-<机型>-<SHA>`：源码包，下载完立刻保存
+  - `toolchain-<机型>-<SHA>`：编译机工具和交叉工具链（`staging_dir/host`、`staging_dir/toolchain-*`、`build_dir/host`、`build_dir/toolchain-*`），编完工具链立刻保存，省约 40 分钟。`build_dir` 里有「已编完」的标记，只存 `staging_dir` 的话还是会整套重编，所以两边都存
+  - `ccache-<机型>-<SHA>-<运行号>`：C/C++ 编译缓存（node、内核、各个包都会用到，上限 8G），每次结束（成功、失败、主动停止）都存一份新的，并自动删掉同机型旧的。「ccache 统计」一步会打印命中率
+  - 上游更新后找不到同 SHA 的缓存，会退回用同机型最近一份，相当于本地 `git pull` 后增量编译
+- **大小风险**：GitHub 每个仓库缓存总共约 10GB，超了按「最久没用」自动删。x86_64 一台的三份缓存压缩后大约 6–8GB，三台一起编可能超额，导致别的机型缓存被挤掉（只影响速度，不影响结果）。如果经常被挤掉，可以考虑不缓存 `build_dir/host`（但工具会重编约 25 分钟），或在 Actions → Caches 里手动删。
+- **本地编译没有 6 小时限制**，见下面「本地编译」，源码目录本身就是增量的。
 
 ## 产物在哪
 

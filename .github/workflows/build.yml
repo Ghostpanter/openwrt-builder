@@ -110,10 +110,23 @@ jobs:
     if: needs.check.outputs.changed == 'true'
     # 24.04 自带 clang 18：内核 6.18 的 bpf-headers 要求 clang >= 15，gn 要求支持 C++23，22.04 的 clang 14 都不行
     runs-on: ubuntu-24.04
+    # actions: write 只用来删掉同机型过期的缓存（见最后的「清理旧缓存」）；发 Release 在 release job 里
+    permissions:
+      contents: read
+      actions: write
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.check.outputs.matrix) }}
+    env:
+      # 和 OpenWrt rules.mk 的默认值一致（CONFIG_CCACHE_DIR 为空时就是 $(TOPDIR)/.ccache），显式写出来给 ccache 统计/设置用
+      CCACHE_DIR: ${{ github.workspace }}/openwrt/.ccache
+      # 缓存键用本机型对应的上游短 SHA：x86_64 看 ImmortalWrt，雅典娜/亚瑟看 LibWrt（另一个上游变了不影响本机型的缓存）
+      UPSTREAM_SHA: ${{ matrix.device == 'x86_64' && needs.check.outputs.immortal_sha || needs.check.outputs.libwrt_sha }}
     steps:
+      - name: 记录开始时间
+        # 「编译」一步据此算离 GitHub 6 小时上限还剩多少时间
+        run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
 
       - name: 清理磁盘
@@ -170,14 +183,41 @@ jobs:
             fi
           done
 
-      - name: 缓存下载包和 ccache
-        uses: actions/cache@v4
+      # 缓存分三份，键 = 种类-机型-上游短SHA，上游变了按机型回退到最近一份（相当于本地 git pull 后增量编译）：
+      #   dl         源码包；下载完立刻保存
+      #   toolchain  编译机工具 staging_dir/host + build_dir/host，交叉工具链 staging_dir/toolchain-* + build_dir/toolchain-*；
+      #              build_dir 里有 .built 等完成标记，只缓存 staging_dir 的话 OpenWrt 还是会整套重编，所以两边都要；工具链编完立刻保存
+      #   ccache     每次都会变，键末尾带 run_id；编译结束（成功、失败、主动超时停止）都存一份新的，并删掉同机型旧的
+      # 用 cache/restore + cache/save 分开写，是因为 actions/cache 只在 job 成功时保存，超时失败就什么都存不下。
+      - name: 恢复缓存：dl
+        id: cache-dl
+        uses: actions/cache/restore@v4
+        with:
+          path: openwrt/dl
+          key: dl-${{ matrix.device }}-${{ env.UPSTREAM_SHA }}
+          restore-keys: dl-${{ matrix.device }}-
+
+      - name: 恢复缓存：工具和工具链
+        id: cache-toolchain
+        uses: actions/cache/restore@v4
         with:
           path: |
-            openwrt/dl
-            openwrt/.ccache
-          key: ${{ matrix.device }}-${{ needs.check.outputs.immortal_sha }}-${{ needs.check.outputs.libwrt_sha }}
-          restore-keys: ${{ matrix.device }}-
+            openwrt/staging_dir/host
+            openwrt/staging_dir/toolchain-*
+            openwrt/build_dir/host
+            openwrt/build_dir/toolchain-*
+          key: toolchain-${{ matrix.device }}-${{ env.UPSTREAM_SHA }}
+          restore-keys: toolchain-${{ matrix.device }}-
+
+      - name: 恢复缓存：ccache
+        id: cache-ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: openwrt/.ccache
+          key: ccache-${{ matrix.device }}-${{ env.UPSTREAM_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-${{ matrix.device }}-${{ env.UPSTREAM_SHA }}-
+            ccache-${{ matrix.device }}-
 
       - name: 更新 feeds 并载入配置
         working-directory: openwrt
@@ -209,6 +249,14 @@ jobs:
               exit 1
             fi
           fi
+          # ccache：配置里要有 CONFIG_CCACHE=y；OpenWrt 默认上限 5G，整机编译会把前面的结果挤掉，调到 8G
+          grep -qx 'CONFIG_CCACHE=y' .config || echo "::warning::.config 里没有 CONFIG_CCACHE=y，ccache 不会生效"
+          mkdir -p "$CCACHE_DIR"
+          ccache --max-size=8G
+          ccache --zero-stats > /dev/null || true
+          echo "缓存命中：dl=${{ steps.cache-dl.outputs.cache-matched-key || '无' }}"
+          echo "          toolchain=${{ steps.cache-toolchain.outputs.cache-matched-key || '无' }}"
+          echo "          ccache=${{ steps.cache-ccache.outputs.cache-matched-key || '无' }}（$(du -sh "$CCACHE_DIR" | cut -f1)）"
 
       - name: 下载源码包
         working-directory: openwrt
@@ -228,30 +276,84 @@ jobs:
           fi
           echo "下载完成，dl 目录 $(du -sh dl | cut -f1)"
 
+      - name: 保存缓存：dl
+        if: steps.cache-dl.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: openwrt/dl
+          key: dl-${{ matrix.device }}-${{ env.UPSTREAM_SHA }}
+
+      - name: 编译工具和工具链
+        id: toolchain
+        working-directory: openwrt
+        run: |
+          # 先单独编 tools + toolchain，编完马上存缓存，后面整机编译超时也不影响这部分
+          s=$(date +%s)
+          if make tools/install toolchain/install -j"$(nproc)" BUILD_LOG=1 > toolchain.log 2>&1; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "工具和工具链完成，用时 $(( ($(date +%s) - s) / 60 )) 分钟（命中缓存时只要几分钟）"
+          else
+            # 不在这里报错退出：交给下一步「编译」，失败时那边会 -j1 V=s 重试并输出详细日志
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::工具/工具链并行编译失败，交给「编译」一步重试"
+            grep -E 'ERROR:' toolchain.log || true
+          fi
+
+      - name: 保存缓存：工具和工具链
+        if: steps.toolchain.outputs.ok == 'true' && steps.cache-toolchain.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            openwrt/staging_dir/host
+            openwrt/staging_dir/toolchain-*
+            openwrt/build_dir/host
+            openwrt/build_dir/toolchain-*
+          key: toolchain-${{ matrix.device }}-${{ env.UPSTREAM_SHA }}
+
       - name: 编译
         working-directory: openwrt
         run: |
           # 完整输出只进 build.log（随日志产物上传），控制台只留每个包的进度行和报错行，避免网页日志太大打不开。
           # BUILD_LOG=1：每个包的编译输出另存到 openwrt/logs/<包路径>/compile.txt，失败的包写 error.txt
           FILTER='^ make\[[0-9]+\] |ERROR:|^make\[[0-9]+\]: \*\*\*|^make: \*\*\*'
-          echo "开始编译：$(nproc) 线程，$(date '+%F %T %Z')"
+          # GitHub 单个 job 最多 6 小时，到点直接被杀，后面的保存缓存、上传日志都不会执行。
+          # 所以从 job 开始算 335 分钟就主动停掉 make，留约 25 分钟保存 ccache 和上传日志；再跑一次会用缓存接着编，快很多。
+          DEADLINE=$(( JOB_START + 335 * 60 ))
+          left() { echo $(( (DEADLINE - $(date +%s)) / 60 )); }
+          timed_out() {
+            echo "::error::离 GitHub 6 小时上限太近，主动停止编译。已编好的部分在 ccache 缓存里，再 Run workflow 一次会快很多"
+            {
+              echo "### ${{ matrix.device }} 编译时间不够，已主动停止"
+              echo "已编好的部分存进了 ccache 缓存，重新运行一次即可（第二次会快很多）。完整日志见 \`logs-${{ matrix.device }}\`。"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          [ "$(left)" -gt 5 ] || timed_out
+          echo "开始编译：$(nproc) 线程，$(date '+%F %T %Z')，最多还能编 $(left) 分钟"
           set +e
-          make -j"$(nproc)" BUILD_LOG=1 2>&1 | tee build.log | grep --line-buffered -E "$FILTER"
+          timeout -k 2m "$(left)m" make -j"$(nproc)" BUILD_LOG=1 2>&1 | tee build.log | grep --line-buffered -E "$FILTER"
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" -eq 0 ]; then
             echo "编译成功：$(date '+%F %T %Z')"
             exit 0
           fi
+          { [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; } && timed_out
 
-          echo "::warning::并行编译失败（退出码 $rc），用 make -j1 V=s 重试，详细输出写进 build-verbose.log"
-          set +e
-          make -j1 V=s BUILD_LOG=1 > build-verbose.log 2>&1
-          rc=$?
-          set -e
-          if [ "$rc" -eq 0 ]; then
-            echo "单线程重试成功（并行编译偶发失败）"
-            exit 0
+          if [ "$(left)" -le 10 ]; then
+            echo "::warning::并行编译失败（退出码 $rc），剩余时间不够 -j1 重试，直接输出报错"
+            cp build.log build-verbose.log
+          else
+            echo "::warning::并行编译失败（退出码 $rc），用 make -j1 V=s 重试（最多 $(left) 分钟），详细输出写进 build-verbose.log"
+            set +e
+            timeout -k 2m "$(left)m" make -j1 V=s BUILD_LOG=1 > build-verbose.log 2>&1
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              echo "单线程重试成功（并行编译偶发失败）"
+              exit 0
+            fi
+            { [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; } && timed_out
           fi
 
           echo "::group::编译失败的包"
@@ -285,6 +387,53 @@ jobs:
           echo "::error::编译失败，完整日志在 logs-${{ matrix.device }} 产物里"
           exit 1
 
+      - name: ccache 统计
+        if: always() && steps.cache-ccache.outcome == 'success'
+        working-directory: openwrt
+        run: |
+          [ -d "$CCACHE_DIR" ] || { echo "没有 ccache 目录"; exit 0; }
+          # 优先用 OpenWrt 自己编的 ccache（编译时用的就是它），没有就用系统的
+          CCACHE=ccache
+          [ -x staging_dir/host/bin/ccache ] && CCACHE=staging_dir/host/bin/ccache
+          "$CCACHE" --show-stats || true
+          echo "ccache 目录大小：$(du -sh "$CCACHE_DIR" | cut -f1)"
+
+      - name: 保存缓存：ccache
+        id: save-ccache
+        if: always() && steps.cache-ccache.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: openwrt/.ccache
+          key: ccache-${{ matrix.device }}-${{ env.UPSTREAM_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: 清理旧缓存
+        # 仓库缓存总共约 10GB，超了 GitHub 会按「最久没用」自动删。这里主动删掉同机型过期的：
+        # 当前这份已经存在时，删掉同种类同机型的其他份（ccache 每次一份新的，不删会很快占满）
+        if: always() && steps.cache-ccache.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEV: ${{ matrix.device }}
+          CCACHE_KEY: ccache-${{ matrix.device }}-${{ env.UPSTREAM_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          for kind in dl toolchain ccache; do
+            if [ "$kind" = ccache ]; then cur="$CCACHE_KEY"; else cur="$kind-$DEV-$UPSTREAM_SHA"; fi
+            keys=$(gh cache list --repo "$REPO" --key "$kind-$DEV-" --limit 100 --json key --jq '.[].key' || true)
+            if ! printf '%s\n' "$keys" | grep -qxF "$cur"; then
+              echo "$kind：当前这份（$cur）没存上，保留旧的"
+              continue
+            fi
+            { printf '%s\n' "$keys" | grep -vxF "$cur" || true; } | while read -r k; do
+              [ -n "$k" ] || continue
+              echo "删除旧缓存 $k"
+              gh cache delete "$k" --repo "$REPO" || true
+            done
+          done
+          echo "::group::本仓库现有缓存"
+          gh cache list --repo "$REPO" --limit 100 || true
+          echo "::endgroup::"
+
       - name: 整理产物
         run: |
           mkdir -p out
@@ -304,7 +453,7 @@ jobs:
           [ -d openwrt ] || exit 0
           cd openwrt
           files=""
-          for f in build.log build-verbose.log download.log download-verbose.log feeds-install.log .config logs; do
+          for f in toolchain.log build.log build-verbose.log download.log download-verbose.log feeds-install.log .config logs; do
             [ -e "$f" ] && files="$files $f"
           done
           if [ -n "$files" ]; then
