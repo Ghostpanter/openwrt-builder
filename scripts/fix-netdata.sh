@@ -1,7 +1,9 @@
 #!/bin/bash
 # netdata（ImmortalWrt feeds，1.38.1）：关掉 Netdata Cloud / ACLK，去掉 protobuf-compat 依赖。
 # 用法：在 openwrt 源码根目录执行 bash <仓库>/scripts/fix-netdata.sh（也可以把源码根目录当第一个参数）。
-# 可重复执行（已改过就跳过）。x86_64-extra-packages.sh 会自动调用它。
+# 可重复执行（已改过就跳过）。x86_64-extra-packages.sh 会自动调用它，local-build.sh 编译前还会再调用一次。
+# 另外会检查 build_dir 里已有的 netdata 源码树：如果它当初不是用 --disable-cloud 配置的（旧的 .configured / .built 还在），
+# 就整个删掉，强制下次重新解包、configure。否则 make 认为已经配置过，继续编 aclk/schema-wrappers，照样报 port_def.inc。
 #
 # 原因：ImmortalWrt 的 netdata 没加 --disable-cloud，会编 aclk/schema-wrappers/*.cc，要 protobuf 头文件；
 # 它改用 protobuf-compat（commit 9ba2f68）后，pkg-config 给出的是不带 STAGING_DIR 的 -I/usr/protobuf-compat/include，
@@ -15,16 +17,19 @@ set -euo pipefail
 ROOT=${1:-.}
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 find_mk() {
-  local r=$1 mk="$1/feeds/packages/admin/netdata/Makefile" alt="$1/package/feeds/packages/netdata/Makefile"
+  local mk="$1/feeds/packages/admin/netdata/Makefile" alt="$1/package/feeds/packages/netdata/Makefile"
   if [ -f "$mk" ]; then echo "$mk"; return 0; fi
   # package/feeds/packages/netdata 通常是指向 feeds 的符号链接，解析成真实文件再改
   if [ -e "$alt" ]; then readlink -f "$alt"; return 0; fi
   return 1
 }
-MK=$(find_mk "$ROOT") || {
+if MK=$(find_mk "$ROOT"); then
+  TOP=$ROOT
+else
   # 没传参数且不在源码根：在仓库根目录执行时，自动试 build/x86_64/openwrt
   if [ -z "${1:-}" ] && MK=$(find_mk "$SCRIPT_DIR/../build/x86_64/openwrt"); then
-    echo "netdata：当前目录不是 openwrt 源码根，改用 $SCRIPT_DIR/../build/x86_64/openwrt"
+    TOP="$SCRIPT_DIR/../build/x86_64/openwrt"
+    echo "netdata：当前目录不是 openwrt 源码根，改用 $TOP"
   else
     echo "错误：在 $(cd "$ROOT" 2>/dev/null && pwd || echo "$ROOT") 下找不到 netdata 的 Makefile" >&2
     echo "  （查了 feeds/packages/admin/netdata/Makefile 和 package/feeds/packages/netdata/Makefile）" >&2
@@ -33,7 +38,7 @@ MK=$(find_mk "$ROOT") || {
     echo "  若源码根下也没有，先执行 ./scripts/feeds update -a && ./scripts/feeds install -a" >&2
     exit 1
   fi
-}
+fi
 echo "netdata：修改 $MK"
 
 HAS_CLOUD=0
@@ -49,7 +54,12 @@ awk -v added="$HAS_CLOUD" '
   { gsub(/[[:space:]]\+protobuf-compat/, ""); print }
 ' "$MK" > "$MK.tmp"
 
-mv "$MK.tmp" "$MK"
+# 内容没变就不覆盖，免得每次都刷新 Makefile 时间戳、导致 netdata 每次整包重编
+if cmp -s "$MK.tmp" "$MK"; then
+  rm -f "$MK.tmp"
+else
+  mv "$MK.tmp" "$MK"
+fi
 
 if grep -q 'protobuf-compat' "$MK" || ! grep -q -- '--disable-cloud' "$MK"; then
   echo "错误：netdata Makefile 没改干净，请检查 $MK" >&2
@@ -57,3 +67,19 @@ if grep -q 'protobuf-compat' "$MK" || ! grep -q -- '--disable-cloud' "$MK"; then
   exit 1
 fi
 echo "netdata：已 --disable-cloud 并去掉 protobuf-compat"
+
+# 已有的 netdata 编译目录：config.status 里没有 --disable-cloud（旧 Makefile 配置的），或者没配置完的残留，整个删掉，
+# 强制重新 prepare + configure。用 --disable-cloud 配置过的保留，不影响增量编译。
+shopt -s nullglob
+for d in "$TOP"/build_dir/target-*/netdata-v*/; do
+  d=${d%/}
+  if [ -f "$d/config.status" ]; then
+    grep -q -- '--disable-cloud' "$d/config.status" && continue
+  else
+    # 开了 CONFIG_AUTOREMOVE 时，编完只剩 .built 等标记、源码被删，没法检查也不需要检查；
+    # 没有 config.status 又没有 .built 的，是只解包了一半 / 配置失败的残留，删掉
+    [ -f "$d/.built" ] && continue
+  fi
+  echo "netdata：$d 不是用 --disable-cloud 配置的（旧的编译目录），删掉强制重新 configure"
+  rm -rf "$d"
+done

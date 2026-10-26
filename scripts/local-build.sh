@@ -545,6 +545,13 @@ cargo_mirror_apply
 # 之前中断留下的截断 .crate 会让 Rust 包一直报 failed to unpack / unexpected end of file，编译前清掉
 bash "$REPO_ROOT/scripts/fix-cargo-cache.sh" "$SRC" || warn "cargo 缓存检查出错，继续编译"
 
+if [ "$DEVICE" = "x86_64" ]; then
+	step "netdata 补丁检查（--disable-cloud）"
+	# 编译前再确认一次：Makefile 已关 Netdata Cloud，且 build_dir 里没有旧的、按带 Cloud 配置过的 netdata 目录
+	# （否则会接着编 aclk/schema-wrappers，报 google/protobuf/port_def.inc: No such file or directory）
+	bash "$REPO_ROOT/scripts/fix-netdata.sh" "$SRC" || die "netdata 补丁失败，见上面的提示"
+fi
+
 step "编译（$JOBS 线程，完整输出在 logs/build.log，控制台只显示进度和报错）"
 # BUILD_LOG=1：每个包的输出另存到 logs/packages/<包路径>/compile.txt，失败的包写 error.txt
 PKG_LOG_DIR="$LOG_DIR/packages"
@@ -583,6 +590,10 @@ if [ "$rc" -ne 0 ]; then
 		if grep -qE 'failed to unpack|unexpected end of file|failed to download .* v[0-9]|spurious network error|failed to get .* as a dependency' "$c"; then
 			echo "提示：像是 cargo 下载 / 解压 crate 失败。当前 crates.io 源=${CARGO_REGISTRY_URL:-官方 crates.io}，代理=$( [ -n "$PROXY_URL" ] && proxy_mask "$PROXY_URL" || echo 未设置)" >&2
 			echo "      先清坏包：bash $REPO_ROOT/scripts/fix-cargo-cache.sh $SRC ，再重跑（不用 --clean）；仍不行换 --cargo-mirror rsproxy / ustc / off" >&2
+		fi
+		if grep -qE 'google/protobuf/port_def\.inc|aclk/schema-wrappers' "$c"; then
+			echo "提示：netdata 还在编 Netdata Cloud（ACLK），说明这份编译目录不是用 --disable-cloud 配置的。" >&2
+			echo "      执行 bash $REPO_ROOT/scripts/fix-netdata.sh $SRC （会删掉旧的 netdata 编译目录），再重跑（不用 --clean）" >&2
 		fi
 		if grep -qE 'signal: killed|Killed|cannot allocate memory|out of memory' "$c"; then
 			echo "提示：像是内存不够被杀（WSL 默认只给一半内存）。用 -j 4 之类少点线程，或在 .wslconfig 里调大 memory / swap" >&2
