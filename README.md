@@ -264,7 +264,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 多媒体 / 开发 | `python3` `python3-pip` | Python 3 | ImmortalWrt packages |
 | 代理 | `luci-app-homeproxy` | HomeProxy（sing-box，nftables；sing-box 不带 NaiveProxy 出站，见下面「sing-box」） | ImmortalWrt luci |
 | 监控 | `luci-app-nlbwmon` | 网络带宽监视（按设备统计流量） | ImmortalWrt luci |
-| 监控 | `luci-app-netdata` | Netdata 实时监控 | ImmortalWrt luci |
+| 监控 | `luci-app-netdata` | Netdata 实时监控（本地网页，已关 Netdata Cloud） | ImmortalWrt luci |
 | 监控 | `luci-app-statistics` | 实时统计 / 历史图表（collectd） | ImmortalWrt luci |
 | 监控 | `prometheus-node-exporter-lua` + 采集器 `-nat_traffic` `-netstat` `-openwrt` `-thermal` `-hwmon` `-uci_dhcp_host` `-textfile` `-snmp6` `-mwan3` `-filesystem` `-ethtool` | Prometheus 指标导出（LAN 9100 端口，默认开启；lua 版，不装 ucode 版） | ImmortalWrt packages |
 | 监控 | `clash-exporter` | OpenClash / Mihomo 流量指标（LAN 2112 端口，默认开启；自动读 OpenClash 面板端口和密码） | Ghostpanter/clash-exporter |

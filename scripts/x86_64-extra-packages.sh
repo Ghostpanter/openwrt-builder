@@ -93,6 +93,11 @@ if [ -f "$PERF_MK" ] && grep -q 'NO_LIBZSTD=1' "$PERF_MK"; then
   echo "perf：已去掉 NO_LIBZSTD，依赖 libzstd"
 fi
 
+# netdata：ImmortalWrt 的 1.38.1 没关 Netdata Cloud，编 ACLK 时找不到 protobuf-compat 头文件
+# （google/protobuf/port_def.inc: No such file or directory）。改成 --disable-cloud、去掉 protobuf-compat，详见脚本注释。
+# 单独抽成脚本，已经准备好的源码树也能直接执行它再单编 netdata。
+bash "$(dirname "$0")/fix-netdata.sh"
+
 # 删掉了 feeds 里的 mosdns，重建索引，避免 feeds install 时出现重名包
 ./scripts/feeds update -i packages
 
