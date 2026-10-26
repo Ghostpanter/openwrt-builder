@@ -221,7 +221,7 @@ export https_proxy=http://192.168.31.246:7890 && gh auth login   # gh 登录也�
 - **tag 命名**：`ci-cache-<机型>-<上游短SHA>`，机型是 `x86_64` / `athena` / `arthur`，短 SHA 是 12 位，和 CI 用的一致（x86_64 看 ImmortalWrt master，雅典娜/亚瑟看 LibWrt）。本地源码就是上游最新时，两边 SHA 一样
 - **CI 怎么用**：「恢复缓存：本地上传的 Release（ci-cache）」一步优先找 SHA 完全一致的；上游已经又更新了就用该机型最新的一份（增量，只重编有变化的部分）；一个都没有就跳过。Release 的优先级高于 Actions 缓存，恢复了工具链就不再用 Actions 的工具链缓存；运行页面 Summary 里会写恢复了什么
 - **安全检查**：CI 会校验 SHA256、检查打包机 glibc 不比 runner 新、用 `ldd` 检查所有编译机工具的动态库，有问题就丢弃这份工具链，回到 Actions 缓存 / 从头编，不会让编译失败。本地源码的绝对路径（例如 `/home/你/openwrt-builder/build/x86_64/openwrt`）会写进部分工具里，CI 会在 runner 上把这个路径软链接到自己的源码目录
-- `upload-ci-cache.sh` 可以重复运行：Release 不存在就创建（预发布，标题写明「不是固件」），存在就覆盖同名文件、删掉多余的旧切片；只上传上面这些缓存文件，不会上传固件。加 `--prune` 会删掉同机型其他旧 SHA 的缓存 Release
+- `upload-ci-cache.sh` 可以重复运行：Release 不存在就创建（预发布，标题写明「不是固件」），已完整上传的切片（同名同大小）自动跳过、没传完的删掉重传，每片失败自动重试（`--retries N`，默认 5），删掉多余的旧切片；上传前会把大于 500M 的切片在本地重新切小（`--part-size 500M`，`0` 不切），走代理传 1 GB 以上单文件容易 `EOF` 断开；默认用 curl（HTTP/1.1、有进度、卡住 2 分钟自动重试），`--gh` 改回 gh 上传；只上传上面这些缓存文件，不会上传固件。加 `--prune` 会删掉同机型其他旧 SHA 的缓存 Release
 - 打包要求：工具和工具链已完整编完（四个目录都在），否则脚本会报错；建议在 Ubuntu 24.04（或 Debian 12）上编，见上一节
 
 ## x86 首次开机自动分区
