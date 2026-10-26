@@ -159,8 +159,8 @@ chmod +x scripts/*.sh && git config core.fileMode false   # 第一次：加执�
 4. 脚本会自动识别 WSL（打印「环境：WSL（…）」或「环境：本机 Linux（…）」），并在编译时从 `PATH` 去掉 `/mnt/c/...` 这类 Windows 路径（带空格、括号会让 OpenWrt 编译出错）。
 5. 想把结果上传给 CI 用（下一节）：**Debian 13 的 glibc（2.41）比 CI 的 Ubuntu 24.04（2.39）新，编出来的工具链 CI 用不了**，打包脚本会拒绝。要给 CI 提速，请在 WSL 里装 **Ubuntu 24.04**（最稳）或 **Debian 12** 来编，也可以装在 E:，例如 `wsl --install -d Ubuntu-24.04 --location E:\WSL\Ubuntu-24.04`（老版本 wsl 没有 `--location` 时用 `wsl --export` / `wsl --import` 搬到 E:）。只在本地编固件的话 Debian 13 没问题。
 6. **国内网络：两种模式**（三个脚本都支持 `--proxy URL`，也可写 `--proxy=URL`，或先 `export PROXY=URL`）
-   - **给了 `--proxy`（Clash / HTTP 代理）**：本次运行的**所有**联网步骤都走它——git 克隆 / 更新、feeds update、额外插件的 git clone、`make download`（wget/curl）、编译阶段 Go 包下载模块、pip、cargo、`--deps` 的 apt、gh 上传。脚本会 export `http_proxy` / `https_proxy` / `all_proxy`（大小写都设），并在 `make` 命令行上再显式传一遍，嵌套子 make 和 go 一定拿得到；apt 用临时配置文件，用完就删。此时 GOPROXY 默认 `https://proxy.golang.org|https://goproxy.cn,direct`（经代理走官方，失败再试 goproxy.cn），不设 pip 镜像。不改 `git config --global`，不在 `/etc/apt` 留永久配置。shell 里已经 export 了 `https_proxy` 等同于给了 `--proxy`。
-   - **不给 `--proxy`**：直连，不需要 Clash，自动用国内公开加速地址：`GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct`（GOSUMDB 校验照常）、`PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`（宿主机 Python 包，requirements 带哈希校验）。源码（GitHub 上的 ImmortalWrt / LibWrt 和 feeds）和 `make download` 仍按上游原地址和 OpenWrt 自带镜像下载，GitHub 不通时还是要 `--proxy`。`--goproxy URL|off`、`--pip-index URL|off` 可单独改，`--no-mirror` 全部关掉。
+   - **给了 `--proxy`（Clash / HTTP 代理）**：本次运行的**所有**联网步骤都走它——git 克隆 / 更新、feeds update、额外插件的 git clone、`make download`（wget/curl）、编译阶段 Go 包下载模块、pip、cargo、`--deps` 的 apt、gh 上传。脚本会 export `http_proxy` / `https_proxy` / `all_proxy`（大小写都设），并在 `make` 命令行上再显式传一遍，嵌套子 make 和 go 一定拿得到；apt 用临时配置文件，用完就删。此时 GOPROXY 默认 `https://proxy.golang.org|https://goproxy.cn,direct`（经代理走官方，失败再试 goproxy.cn），不设 pip 镜像，cargo 用官方 crates.io（经代理）。不改 `git config --global`，不在 `/etc/apt` 留永久配置。shell 里已经 export 了 `https_proxy` 等同于给了 `--proxy`。
+   - **不给 `--proxy`**：直连，不需要 Clash，自动用国内公开加速地址：`GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct`（GOSUMDB 校验照常）、`PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`（宿主机 Python 包，requirements 带哈希校验）、crates.io → rsproxy.cn 稀疏索引 `sparse+https://rsproxy.cn/index/`（Rust 包编译时下载 crate，Cargo.lock 校验照常）。源码（GitHub 上的 ImmortalWrt / LibWrt 和 feeds）和 `make download` 仍按上游原地址和 OpenWrt 自带镜像下载，GitHub 不通时还是要 `--proxy`。`--goproxy URL|off`、`--pip-index URL|off`、`--cargo-mirror rsproxy|ustc|tuna|URL|off` 可单独改，`--no-mirror` 全部关掉。
 
    ```bash
    ./scripts/local-build.sh x86                                                    # 不走代理：公开加速
@@ -180,6 +180,15 @@ chmod +x scripts/*.sh && git config core.fileMode false   # 第一次：加执�
    ```
 
    单个包好了以后，回仓库根目录重跑 `./scripts/local-build.sh --proxy ... x86` 继续编剩下的（增量）。
+8. **Rust 包（shadowsocks-rust 等）在编译阶段才用 cargo 下载 crate**，缓存在 `build/<机型>/openwrt/dl/cargo`（OpenWrt 的 `CARGO_HOME`）。
+   - 镜像：`local-build.sh` 每次编译前写 `dl/cargo/config.toml`，把 crates.io 源替换成镜像（不走代理默认 rsproxy.cn；给了 `--proxy` 默认官方 crates.io 经代理；`--cargo-mirror rsproxy|ustc|tuna|sparse+https://...|off` 可改，也可 `export CARGO_MIRROR=...`）。只动带 `managed-by: openwrt-builder` 标记的文件，自己写的 `config.toml` 不覆盖；`off` 会删掉之前生成的文件。CARGO_HOME 的配置优先级最低，rustc 源码包（x.py）自带 `.cargo/config.toml` 指向 vendor 目录，所以**宿主机 Rust 工具链编译不受镜像影响**。
+   - 坏缓存：中途断网 / 被杀会留下截断的 `.crate`，之后一直报 `failed to unpack ... unexpected end of file`。`local-build.sh` 编译前会自动跑 `scripts/fix-cargo-cache.sh`（`gzip -t` 检查每个 `.crate`，删掉坏的和没解压完的目录，不联网）；手动：
+
+   ```bash
+   bash ~/openwrt-builder/scripts/fix-cargo-cache.sh ~/openwrt-builder/build/x86_64/openwrt
+   cd ~/openwrt-builder/build/x86_64/openwrt
+   make package/feeds/packages/shadowsocks-rust/{clean,compile} -j1 V=s
+   ```
 
 ### CI 缓存：本地编译后上传给 Actions 用
 

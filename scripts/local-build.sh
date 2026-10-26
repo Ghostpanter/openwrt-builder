@@ -32,19 +32,24 @@ usage() {
                         http://192.168.31.246:7890            Clash 不带认证
                         http://用户名:密码@192.168.31.246:7893  Clash 带认证（密码特殊字符要 % 编码）
                       本次运行的所有联网步骤都走它：git 克隆/更新、feeds update、额外插件的 git clone、
-                      make download（wget/curl）、编译阶段 Go 包下载模块、Python 包 pip 下载、cargo、apt（--deps）。
+                      make download（wget/curl）、编译阶段 Go 包下载模块、Python 包 pip 下载、cargo（Rust crate）、apt（--deps）。
                       做法：export http_proxy / https_proxy / all_proxy（大小写都设）+ no_proxy=localhost，
                       并在 make 命令行上再显式传一遍，嵌套的子 make 和 go 也一定拿得到；apt 用临时配置文件（用完删除）。
-                      给了 --proxy 时 GOPROXY 默认用官方 proxy.golang.org（经代理），失败再试 goproxy.cn；不设 pip 镜像。
+                      给了 --proxy 时 GOPROXY 默认用官方 proxy.golang.org（经代理），失败再试 goproxy.cn；不设 pip 镜像；
+                      cargo 默认用官方 crates.io（经代理）。
                       不改 git config --global，也不在 /etc/apt 留永久配置。
                       shell 里已经 export 了 https_proxy / http_proxy 时，等同于给了 --proxy
   不给 --proxy 时     直连，不需要 Clash；自动用国内公开加速地址：
                         GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct（Go 包编译时下载依赖）
                         PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple（编译时 pip 装宿主机 Python 包，带哈希校验）
+                        crates.io → rsproxy.cn 稀疏索引 sparse+https://rsproxy.cn/index/（Rust 包如 shadowsocks-rust 编译时下载 crate）
                       源码（GitHub）和 make download 仍按上游原地址 / OpenWrt 自带镜像下载
   --goproxy URL       自定义 GOPROXY；shell 里已 export GOPROXY 时沿用它；--goproxy off 表示不设、用 Go 默认值
   --pip-index URL     自定义 pip 镜像；shell 里已 export PIP_INDEX_URL 时沿用它；--pip-index off 不设
-  --no-mirror         不用任何公开加速地址（等于 --goproxy off --pip-index off）
+  --cargo-mirror X    crates.io 镜像：rsproxy | ustc | tuna | 完整地址（如 sparse+https://rsproxy.cn/index/）| off（官方 crates.io）；
+                      也可事先 export CARGO_MIRROR=X。写在 openwrt 的 dl/cargo/config.toml（OpenWrt 的 CARGO_HOME）里，
+                      只替换 crates.io 源，Cargo.lock 的 checksum 校验照常；Rust 宿主机工具链（x.py）用自带 vendor 源、不受影响
+  --no-mirror         不用任何公开加速地址（等于 --goproxy off --pip-index off --cargo-mirror off）
   -h, --help          显示本帮助
 
 目录（都在仓库的 build/ 下，已加入 .gitignore）：
@@ -98,6 +103,9 @@ PIP_INDEX_OPT=""
 GOPROXY_DEFAULT="https://goproxy.cn,https://proxy.golang.org,direct"
 GOPROXY_DEFAULT_PROXIED="https://proxy.golang.org|https://goproxy.cn,direct"
 PIP_INDEX_DEFAULT="https://pypi.tuna.tsinghua.edu.cn/simple"
+# crates.io 镜像（稀疏索引）：不走代理时默认 rsproxy；走代理时默认官方 crates.io
+CARGO_MIRROR_OPT="${CARGO_MIRROR:-}"
+CARGO_MIRROR_DEFAULT="rsproxy"
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -114,7 +122,9 @@ while [ $# -gt 0 ]; do
 		--goproxy=*) GOPROXY_OPT="${1#--goproxy=}"; [ -n "$GOPROXY_OPT" ] || die "--goproxy= 后面要跟地址或 off" ;;
 		--pip-index) [ $# -ge 2 ] || die "--pip-index 后面要跟地址或 off"; PIP_INDEX_OPT="$2"; shift ;;
 		--pip-index=*) PIP_INDEX_OPT="${1#--pip-index=}"; [ -n "$PIP_INDEX_OPT" ] || die "--pip-index= 后面要跟地址或 off" ;;
-		--no-mirror) GOPROXY_OPT=off; PIP_INDEX_OPT=off ;;
+		--cargo-mirror) [ $# -ge 2 ] || die "--cargo-mirror 后面要跟 rsproxy / ustc / tuna / 地址 / off"; CARGO_MIRROR_OPT="$2"; shift ;;
+		--cargo-mirror=*) CARGO_MIRROR_OPT="${1#--cargo-mirror=}"; [ -n "$CARGO_MIRROR_OPT" ] || die "--cargo-mirror= 后面要跟镜像或 off" ;;
+		--no-mirror) GOPROXY_OPT=off; PIP_INDEX_OPT=off; CARGO_MIRROR_OPT=off ;;
 		-*) die "未知选项 $1（看 --help）" ;;
 		*)
 			[ -z "$DEVICE" ] || die "只能指定一个机型"
@@ -248,6 +258,68 @@ case "$PIP_INDEX_OPT" in
 		;;
 	*) export PIP_INDEX_URL="$PIP_INDEX_OPT"; echo "pip：PIP_INDEX_URL=$PIP_INDEX_URL（来自 --pip-index）" ;;
 esac
+
+# cargo（Rust 包编译时下载 crate）：OpenWrt 的 rust 包用 CARGO_HOME=$(DL_DIR)/cargo，镜像写进那里的 config.toml
+# （真正写文件在进源码树之后，见 cargo_mirror_apply）。这里只解析选项。
+case "$CARGO_MIRROR_OPT" in
+	"") if [ -n "$PROXY_URL" ]; then CARGO_MIRROR_OPT=off; else CARGO_MIRROR_OPT="$CARGO_MIRROR_DEFAULT"; fi; CARGO_MIRROR_FROM="默认" ;;
+	*) CARGO_MIRROR_FROM="--cargo-mirror / CARGO_MIRROR" ;;
+esac
+case "$CARGO_MIRROR_OPT" in
+	off | default | none | crates.io) CARGO_REGISTRY_URL="" ;;
+	rsproxy) CARGO_REGISTRY_URL="sparse+https://rsproxy.cn/index/" ;;
+	ustc) CARGO_REGISTRY_URL="sparse+https://mirrors.ustc.edu.cn/crates.io-index/" ;;
+	tuna | tsinghua) CARGO_REGISTRY_URL="sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/" ;;
+	sparse+http*://*) CARGO_REGISTRY_URL="$CARGO_MIRROR_OPT" ;;
+	http*://*) CARGO_REGISTRY_URL="sparse+${CARGO_MIRROR_OPT}" ;;
+	*) die "--cargo-mirror 只认 rsproxy / ustc / tuna / off 或 sparse+https://... 地址，收到：$CARGO_MIRROR_OPT" ;;
+esac
+case "$CARGO_REGISTRY_URL" in "" | */) ;; *) CARGO_REGISTRY_URL="$CARGO_REGISTRY_URL/" ;; esac
+if [ -n "$CARGO_REGISTRY_URL" ]; then
+	echo "cargo：crates.io → $CARGO_REGISTRY_URL（$CARGO_MIRROR_FROM${PROXY_URL:+，经代理}；--cargo-mirror 可改，off 关掉）"
+else
+	echo "cargo：官方 crates.io（${PROXY_URL:+经代理；}--cargo-mirror rsproxy 可改用国内镜像）"
+fi
+# 稀疏索引（只下用到的索引文件，比 git 索引快得多）；网络重试多几次
+export CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+export CARGO_NET_RETRY="${CARGO_NET_RETRY:-5}"
+
+CARGO_MARK="managed-by: openwrt-builder/scripts/local-build.sh"
+# 在 openwrt 源码根调用：按 CARGO_REGISTRY_URL 写 / 删 $DL_DIR/cargo/config.toml。
+# 只动带 CARGO_MARK 标记的文件，用户自己写的 config.toml 不覆盖。
+# 为什么写文件而不是用环境变量：cargo 的 [source] 替换不能用环境变量设；而且 CARGO_HOME 里的配置优先级最低，
+# rustc 源码包（x.py）自带 .cargo/config.toml 把 crates-io 指到 vendor 目录，会盖过这里，所以宿主机 Rust 工具链照常离线编。
+cargo_mirror_apply() {
+	local dl cdir cfg
+	dl=$(sed -n 's/^CONFIG_DOWNLOAD_FOLDER="\(.*\)"$/\1/p' .config 2>/dev/null || true)
+	[ -n "$dl" ] || dl="$PWD/dl"
+	cdir="$dl/cargo"
+	cfg="$cdir/config.toml"
+	if [ -e "$cdir/config" ] && ! grep -qF "$CARGO_MARK" "$cdir/config"; then
+		warn "$cdir/config 是你自己的 cargo 配置，不改；crates.io 镜像设置跳过"
+		return 0
+	fi
+	if [ -e "$cfg" ] && ! grep -qF "$CARGO_MARK" "$cfg"; then
+		warn "$cfg 是你自己的 cargo 配置，不覆盖；crates.io 镜像设置跳过"
+		return 0
+	fi
+	if [ -z "$CARGO_REGISTRY_URL" ]; then
+		[ ! -e "$cfg" ] || { rm -f "$cfg"; echo "cargo：已删除之前生成的 $cfg（改用官方 crates.io）"; }
+		return 0
+	fi
+	mkdir -p "$cdir"
+	cat > "$cfg" <<CARGOCFG
+# $CARGO_MARK
+# 每次运行 local-build.sh 自动重写；想关掉用 --cargo-mirror off（会删掉本文件）。
+# 只把 crates.io 源替换成镜像，Cargo.lock 里的 checksum 校验照常。
+[source.crates-io]
+replace-with = "openwrt-builder-mirror"
+
+[source.openwrt-builder-mirror]
+registry = "$CARGO_REGISTRY_URL"
+CARGOCFG
+	echo "cargo：已写 $cfg（crates.io → $CARGO_REGISTRY_URL）"
+}
 
 # 除了 export，再在 make 命令行上显式传一次（命令行变量会进 MAKEFLAGS，所有子 make、go、pip、wget 都能拿到）
 proxy_make_args
@@ -468,6 +540,11 @@ fi
 echo "下载完成，dl 目录 $(du -sh dl 2>/dev/null | cut -f1)"
 
 # ---------- 编译 ----------
+step "cargo 镜像和缓存检查（Rust 包用）"
+cargo_mirror_apply
+# 之前中断留下的截断 .crate 会让 Rust 包一直报 failed to unpack / unexpected end of file，编译前清掉
+bash "$REPO_ROOT/scripts/fix-cargo-cache.sh" "$SRC" || warn "cargo 缓存检查出错，继续编译"
+
 step "编译（$JOBS 线程，完整输出在 logs/build.log，控制台只显示进度和报错）"
 # BUILD_LOG=1：每个包的输出另存到 logs/packages/<包路径>/compile.txt，失败的包写 error.txt
 PKG_LOG_DIR="$LOG_DIR/packages"
@@ -502,6 +579,10 @@ if [ "$rc" -ne 0 ]; then
 		if grep -qE 'proxy\.golang\.org|sum\.golang\.org|goproxy|dial tcp|i/o timeout|TLS handshake timeout|connection reset|go: .*: (Get|reading) ' "$c"; then
 			echo "提示：看起来是 Go 下载依赖时网络不通。当前 GOPROXY=${GOPROXY:-未设置}，代理=$( [ -n "$PROXY_URL" ] && proxy_mask "$PROXY_URL" || echo 未设置)；换 --goproxy 或加/去掉 --proxy 后重跑（不用 --clean）" >&2
 			echo "      自己在源码树里手动 make 时不经过脚本，要先 export GOPROXY=$GOPROXY_AUTO（走代理再 export https_proxy=... http_proxy=...）" >&2
+		fi
+		if grep -qE 'failed to unpack|unexpected end of file|failed to download .* v[0-9]|spurious network error|failed to get .* as a dependency' "$c"; then
+			echo "提示：像是 cargo 下载 / 解压 crate 失败。当前 crates.io 源=${CARGO_REGISTRY_URL:-官方 crates.io}，代理=$( [ -n "$PROXY_URL" ] && proxy_mask "$PROXY_URL" || echo 未设置)" >&2
+			echo "      先清坏包：bash $REPO_ROOT/scripts/fix-cargo-cache.sh $SRC ，再重跑（不用 --clean）；仍不行换 --cargo-mirror rsproxy / ustc / off" >&2
 		fi
 		if grep -qE 'signal: killed|Killed|cannot allocate memory|out of memory' "$c"; then
 			echo "提示：像是内存不够被杀（WSL 默认只给一半内存）。用 -j 4 之类少点线程，或在 .wslconfig 里调大 memory / swap" >&2
