@@ -25,11 +25,13 @@
 
 原版 ImmortalWrt 主线对 IPQ60xx **没有满血 NSS**。LibWrt（`25.12-nss`）在 ImmortalWrt 插件生态基础上合入了 NSS 网络卸载（NAT、PPPoE、桥接、Wi‑Fi offload 等）。选中 `ipq60xx` 后，NSS 相关包（`kmod-qca-nss-drv`、`kmod-qca-nss-ecm`、`nss-firmware-ipq60xx`、`kmod-qca-nss-crypto` 等）由上游 `target/linux/qualcommax/Makefile` 和 `ipq60xx/target.mk` 的 `DEFAULT_PACKAGES` 自动带入。
 
-雅典娜和亚瑟的配置只加了少量插件：LuCI 中文、在线升级、Samba 4 网络共享、chrony 时间同步、USB 存储 / ext4 / 挂载点、Prometheus 指标导出（完整清单见下面「固件内容清单」）。
+雅典娜和亚瑟的配置只加了少量插件：LuCI 中文、在线升级、Samba 4 网络共享、chrony 时间同步、USB 存储 / ext4 / 挂载点、Prometheus 指标导出、OpenClash（完整清单见下面「固件内容清单」）。
 
 - **SMB 也改成了 Samba 4**（不再用 ksmbd）。亚瑟只有 512 MB 内存，smbd 运行时大约占 30–60 MB（传文件时更多），NSS 本身也要预留一部分内存；不用共享时可以在「系统 → 启动项」里把 samba4 停掉。闪存多占约 30–40 MB（未压缩），eMMC 不缺这点空间。
 - **时间同步也由 chrony 接管**，和 x86 用同一个脚本（见 x86 说明里的「时间同步」）。
 - **Prometheus 指标导出**：和 x86 一样用 `prometheus-node-exporter-lua`，默认开启，监听 LAN 的 9100 端口（`http://路由器LAN地址:9100/metrics`）。只选了轻量采集器：基础（CPU / 内存 / 网卡 / 连接跟踪等）+ `nat_traffic` `netstat` `openwrt` `thermal` `uci_dhcp_host` `wifi` `wifi_stations`。它只是一个独立的小 uhttpd 进程（内嵌 Lua，常驻几 MB 内存），被抓取时才采集，亚瑟 512 MB 内存也够；抓取间隔建议 15–30 秒。不用的话在「系统 → 启动项」停掉 `prometheus-node-exporter-lua`。
+
+- **OpenClash**：`luci-app-openclash`（来自 ImmortalWrt luci feed，与 x86 相同；界面自带中文）。固件不预置 Mihomo 内核，首次在 LuCI 里下载。依赖会自动带上 `dnsmasq-full`、`ruby`、`kmod-tun`、`kmod-nft-tproxy` 等。**亚瑟只有 512 MB 内存**，OpenClash + Mihomo + ruby 与 Samba 4 / NSS 同开时容易吃紧；不用时在「系统 → 启动项」停掉 openclash，或先停 samba4。雅典娜 1 GB 内存更宽裕。`clash-exporter` 仍只编进 x86_64（需要额外包装脚本），雅典娜/亚瑟未加。
 
 ## 关于 128G eMMC
 
@@ -402,7 +404,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
   - `textfile` 采集器会读 `/var/prometheus/*.prom`，自己的脚本往里写指标就能一起抓走。
   - Netdata 也自带 Prometheus 格式输出：`http://路由器LAN地址:19999/api/v1/allmetrics?format=prometheus`（Netdata 默认只允许内网地址访问），两个选一个抓就行，别重复存。
   - Grafana 面板：node exporter 用社区的 “Node Exporter Full”（ID 1860），OpenWrt 专用指标（Wi‑Fi、DHCP 主机、NAT 连接）可以搜 “OpenWrt” 面板（例如 ID 11147，或更新的 18153）。
-  - clash-exporter：只编进 x86_64。开机自启，监听 `0.0.0.0:2112`（防火墙挡住 WAN），抓取地址 `http://路由器LAN地址:2112/metrics`。默认从 OpenClash 的 `cn_port` / `dashboard_password` 连 `127.0.0.1`。按目的地拆流量默认关闭，要开就 `uci set clash-exporter.main.collect_dest='1'`。Grafana 用原来的 Clash dashboard（ID 18530）。雅典娜和亚瑟没装 OpenClash，也没编这个包。另有 `clash_up`（连得上 OpenClash 内核为 1，否则为 0），可以拿来做告警；内核断开时连接数、内存、模式这些指标会清空，不会一直停在旧值。源码固定在 `scripts/x86_64-extra-packages.sh` 里的 `CLASH_EXPORTER_COMMIT`，升级时改这个 SHA。
+  - clash-exporter：只编进 x86_64。开机自启，监听 `0.0.0.0:2112`（防火墙挡住 WAN），抓取地址 `http://路由器LAN地址:2112/metrics`。默认从 OpenClash 的 `cn_port` / `dashboard_password` 连 `127.0.0.1`。按目的地拆流量默认关闭，要开就 `uci set clash-exporter.main.collect_dest='1'`。Grafana 用原来的 Clash dashboard（ID 18530）。雅典娜和亚瑟已装 OpenClash，但 `clash-exporter` 仍只编进 x86_64（由 `scripts/x86_64-extra-packages.sh` 拉取），JD 机型未加。另有 `clash_up`（连得上 OpenClash 内核为 1，否则为 0），可以拿来做告警；内核断开时连接数、内存、模式这些指标会清空，不会一直停在旧值。源码固定在 `scripts/x86_64-extra-packages.sh` 里的 `CLASH_EXPORTER_COMMIT`，升级时改这个 SHA。
 - **sing-box**（HomeProxy、PassWall 用）：x86_64 编的是完整版，但去掉了 NaiveProxy 出站（`scripts/x86_64-extra-packages.sh` 把 `SING_BOX_BUILD_NAIVE_OUTBOUND` 改成默认关）。这个功能要把整套 Chromium 网络栈（`libcronet`）编进来，而 `libcronet` 先要编 `gn`，`gn` 现在要求 C++23，当时 ubuntu-22.04 上的 clang 14 编不过，会让整个编译失败。现在编译机换成 ubuntu-24.04（clang 18），`gn` 应该能编了，但 `libcronet` 是整套 Chromium 网络栈，要多编很久、固件也会大不少，所以仍然关着。代价只是 sing-box 不能当 NaiveProxy 客户端；QUIC、uTLS、WireGuard、Tailscale、gVisor 等其他功能都在。
 - **网易云解锁**：依赖 Node.js，编译时要从源码交叉编译 node，整体编译时间会明显变长，固件也会大几十 MB；它的核心程序首次启动时在线下载。
 - **防火墙**：用的是 firewall4（nftables），没有装旧的 firewall（iptables）。Docker、mwan3、strongSwan 依赖 `iptables` 命令，装进来的是走 nftables 的兼容版 `iptables-nft` / `ip6tables-nft`，没有 legacy 版。ImmortalWrt 默认打开 FullCone NAT（`kmod-nft-fullcone`，IPv4 开、IPv6 关）和软件 / 硬件流量卸载（x86 网卡一般不支持硬件卸载，实际只有软件卸载生效）。
@@ -472,13 +474,14 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 |---|---|
 | 内核选项 | 没有改内核选项；`CCACHE=y` 写在配置里，但 LibWrt 的 `make defconfig` 会把它去掉（不影响编译结果） |
 | 内核模块与驱动 | 显式：`kmod-usb-storage` USB 存储、`kmod-fs-ext4` ext4。上游自动带入的 NSS：`kmod-qca-nss-dp` `kmod-qca-nss-drv`（含 bridge-mgr、vlan-mgr、lag-mgr、pppoe、pptp、gre、map-t、vxlanmgr、qdisc、igs、wifi-meshmgr 等子模块）`kmod-qca-nss-ecm` `kmod-qca-nss-crypto` `nss-firmware-ipq60xx`；Wi‑Fi：`kmod-ath11k`（ahb / pci）`ath11k-firmware-ipq6018`、雅典娜另有 `ath11k-firmware-qcn9074`；另外上游默认带 USB 3.0、exFAT / NTFS3 / F2FS / FAT、`kmod-nft-fullcone` |
-| 系统与工具 | 显式：`chrony` 时间同步、`block-mount` 挂载点；上游默认：`default-settings-chn` 国内默认设置、`automount` 自动挂载、`e2fsprogs`、`uboot-envtools`、`wpad-openssl`、`dnsmasq-full`、`firewall4` |
+| 系统与工具 | 显式：`chrony` 时间同步、`block-mount` 挂载点、`dnsmasq-full`（替换精简版 `dnsmasq`，OpenClash 需要）；上游默认：`default-settings-chn` 国内默认设置、`automount` 自动挂载、`e2fsprogs`、`uboot-envtools`、`wpad-openssl`、`firewall4` |
 | 存储与共享 | `luci-app-samba4` Samba 4 网络共享（自动带 `samba4-server` `wsdd2`；`ksmbd-server` / `luci-app-ksmbd` 显式不装） |
 | 监控 | `prometheus-node-exporter-lua` Prometheus 指标导出 + 采集器 `-nat_traffic` `-netstat` `-openwrt` `-thermal` `-uci_dhcp_host` `-wifi` `-wifi_stations`（`prometheus-node-exporter-ucode` 显式不装） |
 | 界面 | `luci` + `luci-i18n-base-zh-cn` LuCI 中文；`luci-app-attendedsysupgrade` 在线升级；`luci-app-chrony` 时间同步；上游默认还带 `luci-app-cpufreq` 调频、`luci-app-package-manager` 软件包、`luci-theme-bootstrap` |
-| 其余层级 | 网络工具、DNS、代理、组网与VPN、远程访问、流量控制、下载、IPTV、4G5G、外设、Docker：都没有额外加，保持上游默认 |
+| 代理 | `luci-app-openclash` OpenClash（ImmortalWrt luci；自带中文；自动依赖 bash / curl / ca-bundle / ip-full / ruby / ruby-yaml / kmod-inet-diag / kmod-nft-tproxy / kmod-tun / unzip / luci-compat；内核运行时下载）。**亚瑟 512 MB 慎用** |
+| 其余层级 | 网络工具、组网与VPN、远程访问、流量控制、下载、IPTV、4G5G、外设、Docker、clash-exporter：都没有额外加，保持上游默认 |
 
-`make defconfig` 后雅典娜 348 个包、亚瑟 347 个包。
+`make defconfig` 后包数量会因 OpenClash 及其依赖（尤其 ruby）明显增加；以各次编译的 `.manifest` 为准。
 
 ### 默认开启 / 默认关闭
 
@@ -493,7 +496,8 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 流量卸载 | 软件 + 硬件卸载开（x86 实际只有软件卸载生效） | 关（由 NSS ECM 硬件加速） |
 | SMB（Samba 4） | 装好，按需添加共享 | 同左 |
 | Prometheus node exporter | 开，LAN 9100（`96-prometheus-node-exporter`） | 同左（同一个脚本） |
-| 默认关闭 | unbound（改到 5334）、https-dns-proxy、conntrackd、snmpd、haproxy、frps / frpc、SoftEther 三个独立服务（`97-x86-service-defaults`）；UPnP；filebrowser；各代理 / 组网插件都要自己配置后才启用 | 无额外服务 |
+| OpenClash | 装好，默认关；首次需下载内核并配置订阅 | 同左（亚瑟注意内存） |
+| 默认关闭 | unbound（改到 5334）、https-dns-proxy、conntrackd、snmpd、haproxy、frps / frpc、SoftEther 三个独立服务（`97-x86-service-defaults`）；UPnP；filebrowser；各代理 / 组网插件都要自己配置后才启用 | OpenClash 默认关，需自行配置订阅/内核 |
 
 ## 包管理器：apk（不是 opkg）
 
