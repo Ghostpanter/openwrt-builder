@@ -13,11 +13,28 @@
 set -euo pipefail
 
 ROOT=${1:-.}
-MK="$ROOT/feeds/packages/admin/netdata/Makefile"
-if [ ! -f "$MK" ]; then
-  echo "netdata：没有 $MK，跳过"
-  exit 0
-fi
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+find_mk() {
+  local r=$1 mk="$1/feeds/packages/admin/netdata/Makefile" alt="$1/package/feeds/packages/netdata/Makefile"
+  if [ -f "$mk" ]; then echo "$mk"; return 0; fi
+  # package/feeds/packages/netdata 通常是指向 feeds 的符号链接，解析成真实文件再改
+  if [ -e "$alt" ]; then readlink -f "$alt"; return 0; fi
+  return 1
+}
+MK=$(find_mk "$ROOT") || {
+  # 没传参数且不在源码根：在仓库根目录执行时，自动试 build/x86_64/openwrt
+  if [ -z "${1:-}" ] && MK=$(find_mk "$SCRIPT_DIR/../build/x86_64/openwrt"); then
+    echo "netdata：当前目录不是 openwrt 源码根，改用 $SCRIPT_DIR/../build/x86_64/openwrt"
+  else
+    echo "错误：在 $(cd "$ROOT" 2>/dev/null && pwd || echo "$ROOT") 下找不到 netdata 的 Makefile" >&2
+    echo "  （查了 feeds/packages/admin/netdata/Makefile 和 package/feeds/packages/netdata/Makefile）" >&2
+    echo "  请在 openwrt 源码根目录（例如 build/x86_64/openwrt）执行，或把源码根路径作为第一个参数：" >&2
+    echo "    bash scripts/fix-netdata.sh ~/openwrt-builder/build/x86_64/openwrt" >&2
+    echo "  若源码根下也没有，先执行 ./scripts/feeds update -a && ./scripts/feeds install -a" >&2
+    exit 1
+  fi
+}
+echo "netdata：修改 $MK"
 
 HAS_CLOUD=0
 grep -q -- '--disable-cloud' "$MK" && HAS_CLOUD=1
