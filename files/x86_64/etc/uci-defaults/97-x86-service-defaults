@@ -2,13 +2,13 @@
 # x86：容易互相冲突的服务默认关闭。每次刷入新固件后的第一次开机都会执行
 # （OpenWrt 升级时不保留服务的开机自启状态），用到的话升级后在 LuCI 里重新打开即可。
 
-# UPnP 自带的 HTTP 端口默认是 5000，和 dufs 默认的 5000 撞车，改到 5100（UPnP 本身仍默认关闭）。
+# UPnP 自带的 HTTP 端口默认是 5000，改到 5100（UPnP 本身仍默认关闭）。
 if [ "$(uci -q get upnpd.config.port)" = "5000" ]; then
 	uci set upnpd.config.port='5100'
 	uci commit upnpd
 fi
 
-# 打印服务 p910nd 的端口是 9100+编号，默认编号 0 = 9100，和 Prometheus node exporter 的 9100 冲突，改成 1（9101）。
+# 打印服务 p910nd 的端口是 9100+编号，默认编号 0 = 9100，改成 1（9101），避免和常见监控占用冲突。
 # 只改所有仍是 0 的打印机段，p910nd 本身仍默认关闭。
 for sec in $(uci -q show p910nd | sed -n "s/^p910nd\.\([^.=]*\)=p910nd$/\1/p"); do
 	[ "$(uci -q get p910nd.$sec.port)" = "0" ] && uci set p910nd.$sec.port='1'
@@ -17,12 +17,10 @@ uci -q changes p910nd | grep -q . && uci commit p910nd
 
 # 下面这些装上就会自己启动、又没有总开关（或总开关在别处），默认关掉：
 # conntrackd：需要自己写主备同步配置才有用。
-# snmpd：默认团体名是 public，在 LuCI 里改团体名后再打开。
-# haproxy：独立服务会按示例配置监听 8080 / 60000，和 qBittorrent 网页端 8080 冲突；
-#          PassWall 用 HAProxy 做负载均衡时自己拉起进程，不依赖这个服务。
+# haproxy：独立服务会按示例配置监听端口；本固件未默认装相关业务时也关掉以免误开。
 # frps / frpc：没有启用开关，装上就启动；frpc 默认连本机 frps 并把 SSH 映射出去，配置好后到“系统 → 启动项”里启用。
-# （unbound / https-dns-proxy / SoftEther 已从固件配置中移除，不再处理）
-for svc in conntrackd snmpd haproxy frps frpc; do
+# （snmpd / unbound / https-dns-proxy / SoftEther / dufs / Prometheus exporter 已从固件配置中移除）
+for svc in conntrackd haproxy frps frpc; do
 	[ -x "/etc/init.d/$svc" ] || continue
 	"/etc/init.d/$svc" stop >/dev/null 2>&1
 	"/etc/init.d/$svc" disable >/dev/null 2>&1
