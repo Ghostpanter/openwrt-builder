@@ -2,17 +2,6 @@
 # x86：容易互相冲突的服务默认关闭。每次刷入新固件后的第一次开机都会执行
 # （OpenWrt 升级时不保留服务的开机自启状态），用到的话升级后在 LuCI 里重新打开即可。
 
-# unbound 默认要占 53 端口，会和 dnsmasq 冲突；MosDNS 默认用 5335，所以改到 5334 并默认关闭。
-# 想用的话在 LuCI 里打开，再把 dnsmasq 的上游指向 127.0.0.1#5334。
-if [ -x /etc/init.d/unbound ]; then
-	uci -q get unbound.ub_main >/dev/null && {
-		uci set unbound.ub_main.listen_port='5334'
-		uci commit unbound
-	}
-	/etc/init.d/unbound stop >/dev/null 2>&1
-	/etc/init.d/unbound disable >/dev/null 2>&1
-fi
-
 # UPnP 自带的 HTTP 端口默认是 5000，和 dufs 默认的 5000 撞车，改到 5100（UPnP 本身仍默认关闭）。
 if [ "$(uci -q get upnpd.config.port)" = "5000" ]; then
 	uci set upnpd.config.port='5100'
@@ -27,15 +16,13 @@ done
 uci -q changes p910nd | grep -q . && uci commit p910nd
 
 # 下面这些装上就会自己启动、又没有总开关（或总开关在别处），默认关掉：
-# https-dns-proxy：默认强制劫持局域网 53 端口并改写 dnsmasq 上游，和 MosDNS / AdGuard Home / SmartDNS 冲突。
 # conntrackd：需要自己写主备同步配置才有用。
 # snmpd：默认团体名是 public，在 LuCI 里改团体名后再打开。
 # haproxy：独立服务会按示例配置监听 8080 / 60000，和 qBittorrent 网页端 8080 冲突；
 #          PassWall 用 HAProxy 做负载均衡时自己拉起进程，不依赖这个服务。
 # frps / frpc：没有启用开关，装上就启动；frpc 默认连本机 frps 并把 SSH 映射出去，配置好后到“系统 → 启动项”里启用。
-# softethervpnserver / bridge / client：装上就启动，占 443 / 992 / 1194 / 5555，
-#          和 uhttpd 的 443、OpenVPN 服务器的 1194 冲突；SoftEther 统一由 LuCI 的 SoftEther VPN 页面（softethervpn 服务）开关。
-for svc in https-dns-proxy conntrackd snmpd haproxy frps frpc softethervpnserver softethervpnbridge softethervpnclient; do
+# （unbound / https-dns-proxy / SoftEther 已从固件配置中移除，不再处理）
+for svc in conntrackd snmpd haproxy frps frpc; do
 	[ -x "/etc/init.d/$svc" ] || continue
 	"/etc/init.d/$svc" stop >/dev/null 2>&1
 	"/etc/init.d/$svc" disable >/dev/null 2>&1
