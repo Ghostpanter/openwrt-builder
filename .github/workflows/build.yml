@@ -127,12 +127,12 @@ jobs:
         # 「编译」一步据此算离 GitHub 6 小时上限还剩多少时间
         run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 清理磁盘
         uses: jlumbroso/free-disk-space@main
         with:
-          tool-cache: true
+          preinstalled-runtimes: true
           android: true
           dotnet: true
           haskell: true
@@ -202,7 +202,7 @@ jobs:
       - name: 恢复缓存：dl
         id: cache-dl
         if: steps.relcache.outputs.dl != 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: openwrt/dl
           key: dl-${{ matrix.device }}-${{ env.UPSTREAM_SHA }}
@@ -211,7 +211,7 @@ jobs:
       - name: 恢复缓存：工具和工具链
         id: cache-toolchain
         if: steps.relcache.outputs.toolchain != 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             openwrt/staging_dir/host
@@ -223,7 +223,7 @@ jobs:
 
       - name: 恢复缓存：ccache
         id: cache-ccache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: openwrt/.ccache
           key: ccache-${{ matrix.device }}-${{ env.UPSTREAM_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -291,7 +291,7 @@ jobs:
 
       - name: 保存缓存：dl
         if: steps.cache-dl.outputs.cache-hit != 'true' && steps.relcache.outputs.dl != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: openwrt/dl
           key: dl-${{ matrix.device }}-${{ env.UPSTREAM_SHA }}
@@ -317,7 +317,7 @@ jobs:
         if: >-
           steps.toolchain.outputs.ok == 'true' && steps.cache-toolchain.outputs.cache-hit != 'true' &&
           !(steps.relcache.outputs.toolchain == 'true' && steps.relcache.outputs.exact == 'true')
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: |
             openwrt/staging_dir/host
@@ -417,7 +417,7 @@ jobs:
       - name: 保存缓存：ccache
         id: save-ccache
         if: always() && steps.cache-ccache.outcome == 'success'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: openwrt/.ccache
           key: ccache-${{ matrix.device }}-${{ env.UPSTREAM_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -458,7 +458,7 @@ jobs:
           ls -lh out
           df -h
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.device }}
           path: out/
@@ -480,7 +480,7 @@ jobs:
 
       - name: 上传编译日志
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: logs-${{ matrix.device }}
           path: build-logs-${{ matrix.device }}.tar.gz
@@ -492,7 +492,7 @@ jobs:
     needs: [check, build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: fw
 
