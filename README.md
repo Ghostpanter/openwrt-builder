@@ -25,7 +25,7 @@
 
 原版 ImmortalWrt 主线对 IPQ60xx **没有满血 NSS**。LibWrt（`25.12-nss`）在 ImmortalWrt 插件生态基础上合入了 NSS 网络卸载（NAT、PPPoE、桥接、Wi‑Fi offload 等）。选中 `ipq60xx` 后，NSS 相关包（`kmod-qca-nss-drv`、`kmod-qca-nss-ecm`、`nss-firmware-ipq60xx`、`kmod-qca-nss-crypto` 等）由上游 `target/linux/qualcommax/Makefile` 和 `ipq60xx/target.mk` 的 `DEFAULT_PACKAGES` 自动带入。
 
-雅典娜和亚瑟的配置只加了少量插件：LuCI 中文、在线升级、Samba 4 网络共享、chrony 时间同步、USB 存储 / ext4 / 挂载点、Prometheus 指标导出、OpenClash（完整清单见下面「固件内容清单」）。
+雅典娜和亚瑟的配置在上游默认之上加了：LuCI 中文、在线升级、Samba 4、chrony、USB 存储 / ext4 / 挂载点、Prometheus、**OpenClash（必带）**，以及与精简后 x86 对齐的组网/穿透（WireGuard、Tailscale、frpc/frps、nps、keepalived）。组网与 OpenClash 都编进固件，运行时不要同时开。完整清单见下面「固件内容清单」。
 
 - **SMB 也改成了 Samba 4**（不再用 ksmbd）。亚瑟只有 512 MB 内存，smbd 运行时大约占 30–60 MB（传文件时更多），NSS 本身也要预留一部分内存；不用共享时可以在「系统 → 启动项」里把 samba4 停掉。闪存多占约 30–40 MB（未压缩），eMMC 不缺这点空间。
 - **时间同步也由 chrony 接管**，和 x86 用同一个脚本（见 x86 说明里的「时间同步」）。
@@ -478,8 +478,10 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 存储与共享 | `luci-app-samba4` Samba 4 网络共享（自动带 `samba4-server` `wsdd2`；`ksmbd-server` / `luci-app-ksmbd` 显式不装） |
 | 监控 | `prometheus-node-exporter-lua` Prometheus 指标导出 + 采集器 `-nat_traffic` `-netstat` `-openwrt` `-thermal` `-uci_dhcp_host` `-wifi` `-wifi_stations`（`prometheus-node-exporter-ucode` 显式不装） |
 | 界面 | `luci` + `luci-i18n-base-zh-cn` LuCI 中文；`luci-app-attendedsysupgrade` 在线升级；`luci-app-chrony` 时间同步；上游默认还带 `luci-app-cpufreq` 调频、`luci-app-package-manager` 软件包、`luci-theme-bootstrap` |
-| 代理 | `luci-app-openclash` OpenClash（ImmortalWrt luci；自带中文；自动依赖 bash / curl / ca-bundle / ip-full / ruby / ruby-yaml / kmod-inet-diag / kmod-nft-tproxy / kmod-tun / unzip / luci-compat；内核运行时下载）。**亚瑟 512 MB 慎用** |
-| 其余层级 | 网络工具、组网与VPN、远程访问、流量控制、下载、IPTV、4G5G、外设、Docker、clash-exporter：都没有额外加，保持上游默认 |
+| 代理 | `luci-app-openclash` OpenClash（必带；ImmortalWrt luci；自带中文；自动依赖 bash / curl / ca-bundle / ip-full / ruby / ruby-yaml / kmod-inet-diag / kmod-nft-tproxy / kmod-tun / unzip / luci-compat；内核运行时下载）。**亚瑟 512 MB 慎用** |
+| 组网与VPN | `luci-proto-wireguard` `wireguard-tools` `qrencode` WireGuard；`luci-app-tailscale` Tailscale（`scripts/jd-extra-packages.sh` 拉 asvow LuCI）；`luci-app-keepalived` VRRP |
+| 远程访问 | `luci-app-frpc` / `luci-app-frps` FRP；`luci-app-nps` NPS 客户端 |
+| 其余层级 | 下载、IPTV、4G5G、Docker、clash-exporter：未额外加。运行时不要同时开组网透明代理与 OpenClash |
 
 `make defconfig` 后包数量会因 OpenClash 及其依赖（尤其 ruby）明显增加；以各次编译的 `.manifest` 为准。
 

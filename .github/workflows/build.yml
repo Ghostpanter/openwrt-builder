@@ -247,10 +247,14 @@ jobs:
           echo "::group::feeds update"
           ./scripts/feeds update -a
           echo "::endgroup::"
-          # x86 额外插件（MosDNS、Tailscale 的 LuCI），只对 x86_64 生效，雅典娜/亚瑟不受影响
+          # x86 额外插件（MosDNS、Tailscale 的 LuCI 等）；JD 只拉 Tailscale LuCI
           if [ "${{ matrix.device }}" = "x86_64" ]; then
             echo "::group::x86_64 额外插件"
             bash ../scripts/x86_64-extra-packages.sh
+            echo "::endgroup::"
+          elif [ "${{ matrix.device }}" = "athena" ] || [ "${{ matrix.device }}" = "arthur" ]; then
+            echo "::group::雅典娜/亚瑟额外插件（Tailscale LuCI）"
+            bash ../scripts/jd-extra-packages.sh
             echo "::endgroup::"
           fi
           # feeds install -a 会刷几千行，写进文件（随日志一起上传），失败才打印末尾
@@ -266,10 +270,10 @@ jobs:
           if [ -n "$missing" ]; then
             echo "以下选项在 make defconfig 后丢失："
             echo "$missing"
-            # 目前只对 x86_64 严格检查，其他机型只提示
-            if [ "${{ matrix.device }}" = "x86_64" ]; then
-              exit 1
-            fi
+            # x86 / 雅典娜 / 亚瑟都严格检查（显式勾选的包不能在 defconfig 后丢失）
+            case "${{ matrix.device }}" in
+              x86_64|athena|arthur) exit 1 ;;
+            esac
           fi
           # ccache：配置里要有 CONFIG_CCACHE=y；OpenWrt 默认上限 5G，整机编译会把前面的结果挤掉，调到 8G
           grep -qx 'CONFIG_CCACHE=y' .config || echo "::warning::.config 里没有 CONFIG_CCACHE=y，ccache 不会生效"
