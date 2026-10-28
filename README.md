@@ -45,13 +45,13 @@
 
 ## 手动触发编译
 
-**选择机型**：Run workflow 时在「要编译的机型」下拉框里选：`all`（三台）、`x86_64`、`athena`（雅典娜）、`arthur`（亚瑟）、`jd`（雅典娜+亚瑟）。只编部分机型时 Release 的 tag 末尾会带上机型名（如 `build-xxx-yyy-x86_64`），不会和三台一起编的版本互相覆盖。
+**选择机型**：Run workflow 时在「要编译的机型」下拉框里选：`all`（三台）、`x86_64`、`athena`（雅典娜）、`arthur`（亚瑟）、`jd`（雅典娜+亚瑟）。Release **按上海时区日期**发版：三台一起编 tag 为 `YYYY-MM-DD`，只编部分机型则为 `YYYY-MM-DD-<机型选项>`（如 `2026-10-28-x86_64`），同日强制重编会覆盖当天产物。上游 SHA 没变且已发过同等机型固件时会跳过（勾 force 除外）。
 
 1. 打开仓库 **Actions** → 左侧 **Build OpenWrt**
 2. 点 **Run workflow**
 3. **第一次请勾选 force（上游没更新也强制编译）**
 
-流程：`check`（对比 ImmortalWrt + LibWrt 两个上游短 SHA 与最近 Release）→ `build`（x86_64 / athena / arthur 并行）→ `release`。
+流程：`check`（取 ImmortalWrt + LibWrt 短 SHA，按日期定 Release tag，并判断是否已为同等上游发过固件）→ `build`（x86_64 / athena / arthur 并行）→ `release`（产物挂到日期 Release）。
 
 当前 **仅启用 `workflow_dispatch`**；每天定时检查在 workflow 里默认注释掉，需要时自行打开。
 
@@ -72,7 +72,7 @@
 
 ## 产物在哪
 
-- **Releases**：tag 为 `build-<immortal短SHA>-<libwrt短SHA>`，三台都成功才发 Release
+- **Releases**：tag 为日期（`YYYY-MM-DD` 或带机型后缀），编译成功后把对应机型产物挂到该 Release；`all` 时三台都成功才发
 - 每次运行的 **Artifacts**（`x86_64` / `athena` / `arthur`），只成功一部分也能下
 
 常用文件：
@@ -539,7 +539,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
     - cron: "0 19 * * *"
 ```
 
-UTC 19:00 = 香港时间每天凌晨 3:00。任一上游有新提交（tag 变化）才会编译。
+UTC 19:00 = 上海时间每天凌晨 3:00。任一上游有新提交（尚无同等上游固件 Release）才会编译；Release 按当天日期命名。
 
 ## ⚠️ 首次刷机提醒
 
