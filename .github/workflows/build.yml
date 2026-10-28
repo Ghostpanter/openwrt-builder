@@ -32,6 +32,7 @@ jobs:
       immortal_sha: ${{ steps.cmp.outputs.immortal_sha }}
       libwrt_sha: ${{ steps.cmp.outputs.libwrt_sha }}
       tag: ${{ steps.cmp.outputs.tag }}
+      date: ${{ steps.cmp.outputs.date }}
       matrix: ${{ steps.cmp.outputs.matrix }}
       devs: ${{ steps.cmp.outputs.devs }}
     steps:
@@ -75,22 +76,30 @@ jobs:
           done
           MATRIX="$MATRIX]}"
 
-          # 三台一起编用 build-<ImmortalWrt>-<LibWrt>；只编部分机型时 tag 末尾加机型，互不覆盖
+          # Release 按上海时区日期发版：all → YYYY-MM-DD；只编部分机型 → YYYY-MM-DD-<机型选项>
+          DATE=$(TZ=Asia/Shanghai date +%F)
           if [ "$DEVICES" = "all" ]; then
-            TAG="build-${IMM}-${LIB}"
+            TAG="$DATE"
           else
-            TAG="build-${IMM}-${LIB}-${DEVICES}"
+            TAG="$DATE-$DEVICES"
           fi
-          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            EXISTS=yes
-          else
-            EXISTS=no
-          fi
+          # 是否已为「同一组上游 SHA + 本次机型」发过固件（ci-cache 不算）；避免仅因换日就重复空编
+          MARKER="upstream: immortal=${IMM} libwrt=${LIB} devices=${DEVS}"
+          ALREADY=no
+          while read -r t; do
+            [ -n "$t" ] || continue
+            body=$(gh release view "$t" --repo "${{ github.repository }}" --json body --jq .body 2>/dev/null || true)
+            if printf '%s\n' "$body" | grep -Fq "$MARKER"; then
+              ALREADY=yes
+              echo "已有同等上游固件 Release：$t"
+              break
+            fi
+          done < <(gh release list --repo "${{ github.repository }}" --limit 50 --json tagName --jq '.[].tagName' | grep -vE '^ci-cache-' || true)
 
           echo "ImmortalWrt master: $IMM"
           echo "LibWrt 25.12-nss:   $LIB"
           echo "本次机型: $DEVS"
-          echo "本次 tag: $TAG  已有同名 Release: $EXISTS"
+          echo "本次 tag: $TAG  同等上游已发过: $ALREADY"
 
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "devs=$DEVS" >> "$GITHUB_OUTPUT"
@@ -98,8 +107,9 @@ jobs:
           echo "immortal_sha=$IMM" >> "$GITHUB_OUTPUT"
           echo "libwrt_sha=$LIB" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
 
-          if [ "$FORCE" = "true" ] || [ "$EXISTS" = "no" ]; then
+          if [ "$FORCE" = "true" ] || [ "$ALREADY" = "no" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -517,12 +527,17 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.check.outputs.tag }}
-          name: ${{ needs.check.outputs.devs }} | ImmortalWrt ${{ needs.check.outputs.immortal_sha }} / LibWrt ${{ needs.check.outputs.libwrt_sha }}
+          name: 固件 ${{ needs.check.outputs.date }}（${{ needs.check.outputs.devs }}）
+          make_latest: true
+          overwrite_files: true
           body: |
+            按日期发版：`${{ needs.check.outputs.tag }}`
             本次编译机型：`${{ needs.check.outputs.devs }}`（下面只有本次编译的机型有产物）
             - **x86_64**：ImmortalWrt `master` @ `${{ needs.check.outputs.immortal_sha }}`
             - **雅典娜 AX6600**（`jdcloud_re-cs-02`）：LibWrt `25.12-nss` @ `${{ needs.check.outputs.libwrt_sha }}`（满血 NSS）
             - **亚瑟 AX1800 Pro**（`jdcloud_re-ss-01`）：LibWrt `25.12-nss` @ `${{ needs.check.outputs.libwrt_sha }}`（满血 NSS）
             - 文件名里带 device id，刷机前务必核对型号；校验文件为 `sha256sums-<机型>`
+
+            <!-- keep: upstream: immortal=${{ needs.check.outputs.immortal_sha }} libwrt=${{ needs.check.outputs.libwrt_sha }} devices=${{ needs.check.outputs.devs }} -->
           files: fw/**/*
           fail_on_unmatched_files: true
