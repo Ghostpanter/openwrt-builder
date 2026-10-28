@@ -102,19 +102,23 @@ if [ "$USE_TC" -eq 1 ]; then
 				ldd "$f" 2>&1 | grep -qE 'not found' && echo "${f#"$OW"/}: $(ldd "$f" 2>&1 | grep -E 'not found' | head -n 1 | xargs)"
 			done | head -n 10)
 		if [ -n "$bad" ]; then
-			warn "恢复的编译机工具缺动态库，丢弃工具链缓存：$(echo "$bad" | head -n 3 | paste -sd';' -)"
+			# 上游 SHA 不一致时旧缓存缺库很常见，用 notice；完全一致仍失败才 warning
+			msg="恢复的编译机工具缺动态库，丢弃工具链缓存：$(echo "$bad" | head -n 3 | paste -sd';' -)"
+			if [ "$EXACT" = true ]; then warn "$msg"; else note "$msg"; fi
 			echo "$bad"
 			rc=1
 		elif "$OW/staging_dir/host/bin/mkhash" md5 </dev/null >/dev/null 2>&1; then
 			setout toolchain true
 			RESTORED+=("工具和工具链：$(du -sh "$OW/staging_dir/host" "$OW"/staging_dir/toolchain-* "$OW/build_dir/host" "$OW"/build_dir/toolchain-* 2>/dev/null | awk -v p="$OW/" '{sub(p, "", $2); printf "%s%s %s", (NR > 1 ? "，" : ""), $2, $1}')")
 		else
-			warn "恢复的 staging_dir/host/bin/mkhash 无法运行，丢弃工具链缓存"
+			msg="恢复的 staging_dir/host/bin/mkhash 无法运行，丢弃工具链缓存"
+			if [ "$EXACT" = true ]; then warn "$msg"; else note "$msg"; fi
 			rc=1
 		fi
 	fi
 	if [ "$rc" -eq 1 ]; then
-		warn "工具链缓存恢复失败，删掉解压了一半的目录，改用 Actions 缓存 / 从头编译"
+		msg="工具链缓存恢复失败，删掉解压了一半的目录，改用 Actions 缓存 / 从头编译"
+		if [ "$EXACT" = true ]; then warn "$msg"; else note "$msg"; fi
 		rm -rf "$OW/staging_dir/host" "$OW"/staging_dir/toolchain-* "$OW/build_dir/host" "$OW"/build_dir/toolchain-*
 	elif [ "$rc" -eq 2 ]; then
 		echo "$TAG 里没有 toolchain，跳过"
