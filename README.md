@@ -25,7 +25,7 @@
 
 原版 ImmortalWrt 主线对 IPQ60xx **没有满血 NSS**。LibWrt（`25.12-nss`）在 ImmortalWrt 插件生态基础上合入了 NSS 网络卸载（NAT、PPPoE、桥接、Wi‑Fi offload 等）。选中 `ipq60xx` 后，NSS 相关包（`kmod-qca-nss-drv`、`kmod-qca-nss-ecm`、`nss-firmware-ipq60xx`、`kmod-qca-nss-crypto` 等）由上游 `target/linux/qualcommax/Makefile` 和 `ipq60xx/target.mk` 的 `DEFAULT_PACKAGES` 自动带入。
 
-雅典娜和亚瑟的配置在上游默认之上加了：LuCI 中文、在线升级、Samba 4、chrony、USB 存储 / ext4 / 挂载点、Prometheus、**OpenClash（必带）**，以及与精简后 x86 对齐的组网/穿透（WireGuard、Tailscale、frpc/frps、nps、keepalived）。组网与 OpenClash 都编进固件，运行时不要同时开。完整清单见下面「固件内容清单」。
+雅典娜和亚瑟的配置在上游默认之上加了：LuCI 中文、Samba 4、chrony、USB 存储 / ext4 / 挂载点、Prometheus、**OpenClash（必带）**，以及组网 WireGuard / Tailscale。不装在线升级（Attended Sysupgrade），用离线 sysupgrade；不装 frp / nps / keepalived。组网与 OpenClash 运行时不要同时开。完整清单见下面「固件内容清单」。
 
 - **SMB 也改成了 Samba 4**（不再用 ksmbd）。亚瑟只有 512 MB 内存，smbd 运行时大约占 30–60 MB（传文件时更多），NSS 本身也要预留一部分内存；不用共享时可以在「系统 → 启动项」里把 samba4 停掉。闪存多占约 30–40 MB（未压缩），eMMC 不缺这点空间。
 - **时间同步也由 chrony 接管**，和 x86 用同一个脚本（见 x86 说明里的「时间同步」）。
@@ -247,7 +247,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 系统 | `default-settings-chn` | 国内默认设置（上海时区、国内 NTP 和软件源镜像） | ImmortalWrt 主仓库 |
 | 系统 | `luci-i18n-firewall-zh-cn` | 防火墙（中文） | ImmortalWrt luci |
 | 系统 | `luci-theme-argon` | Argon 主题 | ImmortalWrt luci |
-| 系统 | `luci-app-attendedsysupgrade` | 在线升级 | ImmortalWrt luci |
+| 系统 | （已移除）`luci-app-attendedsysupgrade` | 只用离线 sysupgrade | — |
 | 系统 | `luci-app-ttyd` | 网页终端 | ImmortalWrt luci |
 | 系统 | `htop` `nano` `curl` `wget-ssl` `bash` `openssh-sftp-server` | 常用命令行工具 / SFTP | ImmortalWrt packages |
 | 核显 / CPU | `kmod-drm-i915` | Intel 核显驱动（提供 `/dev/dri`） | ImmortalWrt 主仓库 |
@@ -452,8 +452,8 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 网络工具 | `ip-full` 完整 ip；`tc-full` 完整 tc；`bind-dig` `drill` DNS 查询；`conntrack` 连接跟踪；`conntrackd` 连接跟踪同步；`ipvsadm` IPVS；`iftop` `nload` 实时流量；`iperf3-ssl` 测速；`speedtest-go` 公网测速；`tcpdump` 抓包；`ethtool-full` 网卡工具；`mtr-json` 路由追踪；`nmap` 端口扫描；`ncat` netcat；`arp-scan` 局域网扫描；`socat` 端口转发命令行；`luci-app-wol` 网络唤醒；`luci-app-arpbind` IP/MAC 绑定 |
 | DNS | `dnsmasq-full`（替换 `dnsmasq`）完整 DNS/DHCP；`luci-app-adguardhome` AdGuard Home；`luci-app-mosdns` MosDNS；`luci-app-smartdns` SmartDNS；`luci-app-https-dns-proxy` DoH 代理；`luci-app-unbound` Unbound 递归 DNS；`luci-app-adblock-fast` 广告过滤 |
 | 代理 | `luci-app-openclash` OpenClash；`luci-app-passwall` PassWall；`luci-app-homeproxy` HomeProxy；`luci-app-daed` daed；`luci-app-v2raya` v2rayA；`luci-app-nikki` + `mihomo-meta` Nikki；`luci-app-gost` GOST；`luci-app-microsocks` SOCKS5 服务端；`luci-app-ua2f` UA2F；`luci-app-unblockneteasemusic` 网易云解锁 |
-| 组网与VPN | `luci-proto-wireguard` `wireguard-tools` `qrencode` WireGuard；`luci-app-tailscale` Tailscale；`luci-app-zerotier` ZeroTier；`luci-app-easytier` + `easytier` EasyTier；`luci-app-n2n` N2N；`luci-app-openvpn-server` OpenVPN 服务器；`luci-app-ipsec-vpnd` IPsec 服务器；`luci-app-softethervpn` SoftEther；`luci-app-keepalived` VRRP 高可用 |
-| 远程访问 | `luci-app-ttyd` 网页终端；`luci-app-frpc` FRP 客户端；`luci-app-frps` FRP 服务端；`luci-app-nps` NPS 客户端；`luci-app-cloudflared` Cloudflare Tunnel；`luci-app-natmap` NATMap；`luci-app-lucky` Lucky；`luci-app-ddns-go` DDNS-GO；`luci-app-ddns` 动态域名；`luci-app-3cat` 端口转发；`luci-app-upnp` UPnP；`luci-app-acme` ACME 证书 |
+| 组网与VPN | `luci-proto-wireguard` `wireguard-tools` `qrencode` WireGuard；`luci-app-tailscale` Tailscale（ZeroTier / EasyTier / n2n / OpenVPN / IPsec / SoftEther / keepalived 已移除） |
+| 远程访问 | `luci-app-ttyd` 网页终端；`luci-app-ddns` 动态域名；`luci-app-3cat` 端口转发；`luci-app-upnp` UPnP；`luci-app-acme` ACME 证书（frp / nps / cloudflared / natmap / lucky / ddns-go 已移除） |
 | 流量控制 | `luci-app-sqm` SQM；`luci-app-qosify` qosify；`luci-app-eqos` 按 IP 限速；`luci-app-mwan3` 多线负载均衡；`luci-app-syncdial` 多拨；`luci-app-pbr` 策略路由；`kmod-sched` `kmod-sched-ctinfo` `kmod-sched-connmark` `kmod-sched-flower` `kmod-sched-act-vlan` `kmod-sched-drr` `kmod-sched-prio` `kmod-sched-mqprio` tc 扩展；`kmod-sched-bpf` + `bpftool-minimal` eBPF 调度；`kmod-netem` 网络损伤模拟；`luci-app-appfilter` 应用过滤；`luci-app-timecontrol` 定时控制；`luci-app-banip` IP 封禁；`luci-app-crowdsec-firewall-bouncer` CrowdSec 封禁端 |
 | 存储与共享 | `luci-app-samba4` + `samba4-server` Samba 4 共享（`ksmbd-server` / `luci-app-ksmbd` 显式不装）；`luci-app-nfs` NFS；`luci-app-vsftpd` FTP；`luci-app-dufs` WebDAV；`luci-app-minidlna` DLNA；`luci-app-cifs-mount` 挂载远程 SMB；`luci-app-rclone` Rclone；`luci-app-openlist` OpenList；`luci-app-syncthing` Syncthing；`luci-app-filebrowser` `filebrowser` `luci-app-filemanager` 文件管理；`luci-app-diskman` 磁盘管理；`luci-app-hd-idle` 硬盘休眠；`parted` `fdisk` `lsblk` 分区；`e2fsprogs` `resize2fs` ext4 工具；`f2fs-tools` F2FS 工具；`xfs-mkfs` XFS 格式化；`ntfs-3g` NTFS（FUSE）；`block-mount` 挂载点；`losetup` 回环设备；`mdadm` 软 RAID；`lvm2` LVM；`smartmontools` 硬盘健康；`hdparm` 硬盘参数；`nvme-cli` NVMe 管理 |
 | 下载 | `luci-app-aria2` Aria2；`luci-app-qbittorrent` qBittorrent；`luci-app-transmission` Transmission |
@@ -462,7 +462,7 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 4G5G | `luci-proto-modemmanager` + `modemmanager` 拨号；`kmod-usb-serial-option` `kmod-usb-acm` `kmod-usb-wdm` USB 串口 / 控制口；`kmod-usb-net-qmi-wwan` `kmod-usb-net-cdc-mbim` `kmod-usb-net-huawei-cdc-ncm` QMI / MBIM / 华为 NCM；`uqmi` `umbim` 命令行；`kmod-wwan` `kmod-mhi-net` `kmod-mhi-wwan-ctrl` `kmod-mtk-t7xx` PCIe 5G 模块；`luci-app-3ginfo-lite` 信号信息；`luci-app-modemband` 锁频段；`luci-app-sms-tool-js` 短信 |
 | 外设 | `usbmuxd` iPhone 连接；`luci-app-p910nd` 网络打印；`luci-app-nut` + `nut-driver-usbhid-ups` UPS；`luci-app-mosquitto` MQTT 服务器；`luci-app-vlmcsd` KMS 激活 |
 | Docker | `luci-app-dockerman` 管理界面；`dockerd` `docker` `docker-compose` Docker 本体（Docker 里的应用不集成） |
-| 界面 | `luci-theme-argon` Argon 主题；`LUCI_LANG_zh_Hans` 中文语言；`luci-app-attendedsysupgrade` 在线升级；`luci-app-commands` 自定义命令；`luci-app-autoreboot` 定时重启；`luci-app-irqbalance` 中断均衡；`luci-app-chrony` 时间同步；`luci-app-cpulimit` CPU 限制；`luci-app-ramfree` 释放内存 |
+| 界面 | `luci-theme-argon` Argon 主题；`LUCI_LANG_zh_Hans` 中文语言；`luci-app-commands` 自定义命令；`luci-app-autoreboot` 定时重启；`luci-app-irqbalance` 中断均衡；`luci-app-chrony` 时间同步；`luci-app-cpulimit` CPU 限制；`luci-app-ramfree` 释放内存（不装在线升级） |
 
 显式不装：`dnsmasq`（被 `dnsmasq-full` 替换）、`kmod-r8169`、`ksmbd-server`、`luci-app-ksmbd`、`luci-i18n-ksmbd-zh-cn`、`luci-app-airplay2`、`luci-i18n-airplay2-zh-cn`、`shairport-sync-*`、`prometheus-node-exporter-ucode`（用 lua 版）。`make defconfig` 后 x86 共 1152 个包，`tc-tiny` 自动不再选中。
 
@@ -477,10 +477,10 @@ x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-dat
 | 系统与工具 | 显式：`chrony` 时间同步、`block-mount` 挂载点、`dnsmasq-full`（替换精简版 `dnsmasq`，OpenClash 需要）；上游默认：`default-settings-chn` 国内默认设置、`automount` 自动挂载、`e2fsprogs`、`uboot-envtools`、`wpad-openssl`、`firewall4` |
 | 存储与共享 | `luci-app-samba4` Samba 4 网络共享（自动带 `samba4-server` `wsdd2`；`ksmbd-server` / `luci-app-ksmbd` 显式不装） |
 | 监控 | `prometheus-node-exporter-lua` Prometheus 指标导出 + 采集器 `-nat_traffic` `-netstat` `-openwrt` `-thermal` `-uci_dhcp_host` `-wifi` `-wifi_stations`（`prometheus-node-exporter-ucode` 显式不装） |
-| 界面 | `luci` + `luci-i18n-base-zh-cn` LuCI 中文；`luci-app-attendedsysupgrade` 在线升级；`luci-app-chrony` 时间同步；上游默认还带 `luci-app-cpufreq` 调频、`luci-app-package-manager` 软件包、`luci-theme-bootstrap` |
+| 界面 | `luci` + `luci-i18n-base-zh-cn` LuCI 中文；`luci-app-chrony` 时间同步（不装在线升级）；上游默认还带 `luci-app-cpufreq` 调频、`luci-app-package-manager` 软件包、`luci-theme-bootstrap` |
 | 代理 | `luci-app-openclash` OpenClash（必带；ImmortalWrt luci；自带中文；自动依赖 bash / curl / ca-bundle / ip-full / ruby / ruby-yaml / kmod-inet-diag / kmod-nft-tproxy / kmod-tun / unzip / luci-compat；内核运行时下载）。**亚瑟 512 MB 慎用** |
-| 组网与VPN | `luci-proto-wireguard` `wireguard-tools` `qrencode` WireGuard；`luci-app-tailscale` Tailscale（`scripts/jd-extra-packages.sh` 拉 asvow LuCI）；`luci-app-keepalived` VRRP |
-| 远程访问 | `luci-app-frpc` / `luci-app-frps` FRP；`luci-app-nps` NPS 客户端 |
+| 组网与VPN | `luci-proto-wireguard` `wireguard-tools` `qrencode` WireGuard；`luci-app-tailscale` Tailscale（`scripts/jd-extra-packages.sh` 拉 asvow LuCI）。不装 keepalived / frp / nps |
+| 升级 | 不装 `luci-app-attendedsysupgrade`，刷机用离线 `sysupgrade` / factory |
 | 其余层级 | 下载、IPTV、4G5G、Docker、clash-exporter：未额外加。运行时不要同时开组网透明代理与 OpenClash |
 
 `make defconfig` 后包数量会因 OpenClash 及其依赖（尤其 ruby）明显增加；以各次编译的 `.manifest` 为准。
