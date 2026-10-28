@@ -490,6 +490,12 @@ if [ "$DEVICE" = "x86_64" ]; then
 		tail -n 60 "$LOG_DIR/extra-packages.log"
 		exit 1
 	fi
+elif [ "$DEVICE" = "athena" ] || [ "$DEVICE" = "arthur" ]; then
+	step "雅典娜/亚瑟额外插件 Tailscale LuCI（日志 logs/extra-packages.log）"
+	if ! bash "$REPO_ROOT/scripts/jd-extra-packages.sh" > "$LOG_DIR/extra-packages.log" 2>&1; then
+		tail -n 60 "$LOG_DIR/extra-packages.log"
+		exit 1
+	fi
 fi
 
 step "feeds install（日志 logs/feeds-install.log）"
@@ -506,8 +512,10 @@ missing=$(grep -E '^CONFIG_[A-Za-z0-9_.+-]+=y$' "$CONFIG_FILE" | while read -r l
 if [ -n "$missing" ]; then
 	echo "以下选项在 make defconfig 后丢失："
 	echo "$missing"
-	# 和 CI 一样只对 x86_64 严格检查，其他机型只提示
-	[ "$DEVICE" != "x86_64" ] || die "x86_64 配置有选项丢失"
+	# 和 CI 一样：x86 / 雅典娜 / 亚瑟严格检查
+	case "$DEVICE" in
+		x86_64|athena|arthur) die "$DEVICE 配置有选项丢失" ;;
+	esac
 else
 	echo "配置检查通过：所有 =y 选项都在"
 fi
