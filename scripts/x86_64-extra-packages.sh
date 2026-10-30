@@ -3,7 +3,7 @@
 # ImmortalWrt 自带的 luci/packages 已经有 OpenClash、PassWall、AdGuard Home、ZeroTier、DiskMan、Docker、
 # Tailscale 社区版界面（luci-app-tailscale-community）等，
 # 这里只补上游没有的：MosDNS（sbwml）、Lucky（gdy666）、EasyTier（EasyTier 官方）、定时控制（gaobin89）、
-# Nikki（nikkinikki-org）、Home Assistant LuCI（linkease luci-app-homeassistant + istore taskd/xterm）。
+# Nikki（nikkinikki-org）。
 set -euo pipefail
 
 TMP=$(mktemp -d)
@@ -57,15 +57,6 @@ cp "$TMP/clash-exporter/openwrt/Makefile" package/extra/clash-exporter/Makefile
 cp -a "$TMP/clash-exporter/openwrt/files" package/extra/clash-exporter/files
 cp "$TMP/clash-exporter/main.go" "$TMP/clash-exporter/go.mod" "$TMP/clash-exporter/go.sum" package/extra/clash-exporter/src/
 cp -a "$TMP/clash-exporter/collector" package/extra/clash-exporter/src/collector
-
-# Home Assistant：ImmortalWrt feeds 里没有。用 linkease 的 luci-app-homeassistant（Docker 跑官方镜像
-# homeassistant/home-assistant:latest），外加 istore 的 taskd / luci-lib-taskd / luci-lib-xterm 依赖链。
-# 固件已带 dockerd / docker / luci-app-dockerman / lsblk；刷机后在 LuCI「Home Assistant」里设配置目录再安装。
-rm -rf "$TMP/istore" "$TMP/ha-app" package/extra/taskd package/extra/luci-lib-taskd package/extra/luci-lib-xterm package/extra/luci-app-homeassistant
-git clone --depth 1 https://github.com/linkease/istore "$TMP/istore"
-cp -r "$TMP/istore/luci/taskd" "$TMP/istore/luci/luci-lib-taskd" "$TMP/istore/luci/luci-lib-xterm" package/extra/
-git clone --depth 1 https://github.com/linkease/openwrt-app-actions "$TMP/ha-app"
-cp -r "$TMP/ha-app/applications/luci-app-homeassistant" package/extra/
 
 # sing-box：完整版的 NaiveProxy 出站开关是 def_bool y（菜单里关不掉），一开就要编 libcronet（Chromium 网络栈），
 # libcronet 又要先编 gn，gn 现在要求 C++23，GitHub ubuntu-22.04 上默认的 clang 14 不认 -std=c++23，直接编译失败；
