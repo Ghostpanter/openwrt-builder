@@ -491,7 +491,7 @@ if [ "$DEVICE" = "x86_64" ]; then
 		exit 1
 	fi
 elif [ "$DEVICE" = "athena" ] || [ "$DEVICE" = "arthur" ]; then
-	step "雅典娜/亚瑟额外插件 Tailscale LuCI（日志 logs/extra-packages.log）"
+	step "雅典娜/亚瑟额外插件（MosDNS / Athena LED）（日志 logs/extra-packages.log）"
 	if ! bash "$REPO_ROOT/scripts/jd-extra-packages.sh" > "$LOG_DIR/extra-packages.log" 2>&1; then
 		tail -n 60 "$LOG_DIR/extra-packages.log"
 		exit 1

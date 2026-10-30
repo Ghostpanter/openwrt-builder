@@ -1,7 +1,8 @@
 #!/bin/bash
 # x86_64 专用：在 ./scripts/feeds update -a 之后、feeds install -a 之前执行（工作目录为 openwrt 源码根目录）
-# ImmortalWrt 自带的 luci/packages 已经有 OpenClash、PassWall、AdGuard Home、ZeroTier、DiskMan、Docker 等，
-# 这里只补上游没有的：MosDNS（sbwml）、Tailscale（asvow）、Lucky（gdy666）、EasyTier（EasyTier 官方）、定时控制（gaobin89）、Nikki（nikkinikki-org）。
+# ImmortalWrt 自带的 luci/packages 已经有 OpenClash、PassWall、AdGuard Home、ZeroTier、DiskMan、Docker、
+# Tailscale 社区版界面（luci-app-tailscale-community）等，
+# 这里只补上游没有的：MosDNS（sbwml）、Lucky（gdy666）、EasyTier（EasyTier 官方）、定时控制（gaobin89）、Nikki（nikkinikki-org）。
 set -euo pipefail
 
 TMP=$(mktemp -d)
@@ -15,12 +16,6 @@ git clone --depth 1 -b v5 https://github.com/sbwml/luci-app-mosdns "$TMP/mosdns"
 rm -rf package/extra/mosdns package/extra/geo2txt package/extra/luci-app-mosdns
 mkdir -p package/extra
 cp -r "$TMP/mosdns/mosdns" "$TMP/mosdns/geo2txt" "$TMP/mosdns/luci-app-mosdns" package/extra/
-
-# Tailscale：按 asvow/luci-app-tailscale 的说明，去掉 tailscale 包自带的启动脚本和配置，改用 LuCI 插件提供的
-sed -i '/\/etc\/init\.d\/tailscale/d;/\/etc\/config\/tailscale/d;' feeds/packages/net/tailscale/Makefile
-rm -rf package/extra/luci-app-tailscale
-git clone --depth 1 https://github.com/asvow/luci-app-tailscale package/extra/luci-app-tailscale
-rm -rf package/extra/luci-app-tailscale/.git
 
 # Lucky：ImmortalWrt feeds 里没有，用 gdy666 官方的 lucky + luci-app-lucky
 # （lucky 包下载的是作者发布的预编译二进制）
