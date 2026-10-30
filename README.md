@@ -1,550 +1,389 @@
 # openwrt-builder
 
-用 GitHub Actions **双上游**编译三台设备的固件：
+三台设备固件配置仓库：x86_64 用 [ImmortalWrt](https://github.com/immortalwrt/immortalwrt) `master`；雅典娜 / 亚瑟用 [LibWrt](https://github.com/LiBwrt/LibWrt) `25.12-nss`。配置见 `configs/*.config`。本文档**只保留软件包清单**（显式 `CONFIG_PACKAGE_*=y`，不含自动依赖）。编译：Actions `workflow_dispatch` 或 `scripts/local-build.sh`。
 
-| 机型 | 配置文件 | 上游 | target / device id | SoC |
-|---|---|---|---|---|
-| x86_64 软路由 / 虚拟机 | `configs/x86_64.config` | [ImmortalWrt](https://github.com/immortalwrt/immortalwrt) `master` | `x86/64` / `generic` | x86_64 |
-| 京东云 雅典娜 AX6600（RE-CS-02） | `configs/athena.config` | [LibWrt](https://github.com/LiBwrt/LibWrt) `25.12-nss`（满血 NSS） | `qualcommax/ipq60xx` / `jdcloud_re-cs-02` | 高通 IPQ6010（+ QCN9074 5G 射频） |
-| 京东云 亚瑟 AX1800 Pro（RE-SS-01） | `configs/arthur.config` | [LibWrt](https://github.com/LiBwrt/LibWrt) `25.12-nss`（满血 NSS） | `qualcommax/ipq60xx` / `jdcloud_re-ss-01` | 高通 IPQ6000 |
-
-三个机型并行编译；单个失败不影响其它机型的 Artifacts，但只有三台都成功才发 Release。
-
-## ⚠️ 雅典娜机型名更正
-
-本仓库**早期版本的 `athena.config` 用的是 `jdcloud_re-ss-01`，那其实是亚瑟（AX1800 Pro）**，不是雅典娜。现已更正：
-
-- 雅典娜 AX6600 → `jdcloud_re-cs-02`
-- 亚瑟 AX1800 Pro → `jdcloud_re-ss-01`
-
-依据 LibWrt `target/linux/qualcommax/image/ipq60xx.mk`：`jdcloud_re-ss-01` 为 `SOC := ipq6000`，`jdcloud_re-cs-02` 为 `SOC := ipq6010` 且带 `ath11k-firmware-qcn9074`（雅典娜的三频 5G 射频）。
-
-**如果你之前下载过旧版 “athena” 产物（文件名里是 `re-ss-01`），不要刷到雅典娜上。** 文件名里都带 device id，刷之前核对一遍。
-
-## 为什么雅典娜、亚瑟用 LibWrt？
-
-原版 ImmortalWrt 主线对 IPQ60xx **没有满血 NSS**。LibWrt（`25.12-nss`）在 ImmortalWrt 插件生态基础上合入了 NSS 网络卸载（NAT、PPPoE、桥接、Wi‑Fi offload 等）。选中 `ipq60xx` 后，NSS 相关包（`kmod-qca-nss-drv`、`kmod-qca-nss-ecm`、`nss-firmware-ipq60xx`、`kmod-qca-nss-crypto` 等）由上游 `target/linux/qualcommax/Makefile` 和 `ipq60xx/target.mk` 的 `DEFAULT_PACKAGES` 自动带入。
-
-雅典娜和亚瑟的配置在上游默认之上加了：LuCI 中文、Samba 4、chrony、USB 存储 / ext4 / 挂载点、Prometheus、**OpenClash（必带）**，以及组网 WireGuard / Tailscale。不装在线升级（Attended Sysupgrade），用离线 sysupgrade；不装 frp / nps / keepalived。组网与 OpenClash 运行时不要同时开。完整清单见下面「固件内容清单」。
-
-- **SMB 也改成了 Samba 4**（不再用 ksmbd）。亚瑟只有 512 MB 内存，smbd 运行时大约占 30–60 MB（传文件时更多），NSS 本身也要预留一部分内存；不用共享时可以在「系统 → 启动项」里把 samba4 停掉。闪存多占约 30–40 MB（未压缩），eMMC 不缺这点空间。
-- **时间同步也由 chrony 接管**，和 x86 用同一个脚本（见 x86 说明里的「时间同步」）。
-- **Prometheus 指标导出**：和 x86 一样用 `prometheus-node-exporter-lua`，默认开启，监听 LAN 的 9100 端口（`http://路由器LAN地址:9100/metrics`）。只选了轻量采集器：基础（CPU / 内存 / 网卡 / 连接跟踪等）+ `nat_traffic` `netstat` `openwrt` `thermal` `uci_dhcp_host` `wifi` `wifi_stations`。它只是一个独立的小 uhttpd 进程（内嵌 Lua，常驻几 MB 内存），被抓取时才采集，亚瑟 512 MB 内存也够；抓取间隔建议 15–30 秒。不用的话在「系统 → 启动项」停掉 `prometheus-node-exporter-lua`。
-
-- **OpenClash**：`luci-app-openclash`（来自 ImmortalWrt luci feed，与 x86 相同；界面自带中文）。固件不预置 Mihomo 内核，首次在 LuCI 里下载。依赖会自动带上 `dnsmasq-full`、`ruby`、`kmod-tun`、`kmod-nft-tproxy` 等。**亚瑟只有 512 MB 内存**，OpenClash + Mihomo + ruby 与 Samba 4 / NSS 同开时容易吃紧；不用时在「系统 → 启动项」停掉 openclash，或先停 samba4。雅典娜 1 GB 内存更宽裕。`clash-exporter` 仍只编进 x86_64（需要额外包装脚本），雅典娜/亚瑟未加。
-
-## 关于 128G eMMC
-
-雅典娜和亚瑟这两台都是 **128G eMMC**。eMMC 容量**不影响**编出来的固件：上游没有区分 64G / 128G 的 device，同一个 `factory.bin` / `sysupgrade.bin` 通用。容量只和 **GPT 分区表**有关：
-
-- **第一次从原厂刷机**：先刷 eMMC 版 U-Boot，再刷**和你机型、容量匹配的 GPT 分区表**（128G 用 128G 的表，或者刷机包里不限容量的 `no-last-partition` 版本），最后在 U-Boot 网页刷 `*-factory.bin`。
-- **不要拿 64G 的 GPT 刷 128G 的机器**，否则后半段空间用不上，或分区错位。雅典娜和亚瑟的 GPT 也不能混用。
-- 刷完后多出来的空间可以在系统里新建分区，用「挂载点」挂上给 Samba 共享。
-
-常用刷机资料：[lgs2007m 京东云亚瑟/雅典娜刷机救砖教程](https://github.com/lgs2007m/Actions-OpenWrt/releases/tag/Router-Flashing-Files)、[chenxin527 eMMC U-Boot](https://github.com/chenxin527/uboot-ipq60xx-emmc-build)。
-
-## 手动触发编译
-
-**选择机型**：Run workflow 时在「要编译的机型」下拉框里选：`all`（三台）、`x86_64`、`athena`（雅典娜）、`arthur`（亚瑟）、`jd`（雅典娜+亚瑟）。Release **按上海时区日期**发版：三台一起编 tag 为 `YYYY-MM-DD`，只编部分机型则为 `YYYY-MM-DD-<机型选项>`（如 `2026-10-28-x86_64`），同日强制重编会覆盖当天产物。上游 SHA 没变且已发过同等机型固件时会跳过（勾 force 除外）。
-
-1. 打开仓库 **Actions** → 左侧 **Build OpenWrt**
-2. 点 **Run workflow**
-3. **第一次请勾选 force（上游没更新也强制编译）**
-
-流程：`check`（取 ImmortalWrt + LibWrt 短 SHA，按日期定 Release tag，并判断是否已为同等上游发过固件）→ `build`（x86_64 / athena / arthur 并行）→ `release`（产物挂到日期 Release）。
-
-当前 **仅启用 `workflow_dispatch`**；每天定时检查在 workflow 里默认注释掉，需要时自行打开。
-
-首次编译 x86_64 要将近 6 小时（插件多，含 Node.js、Rust、perf、gdb、samba4、ffmpeg 等），雅典娜/亚瑟短得多。
-
-### 编译时间、6 小时上限和缓存
-
-- **为什么会撞 6 小时**：GitHub 单个 job 最多跑 6 小时，到点直接被杀。x86_64 第一次全量编译时，光 `package/feeds/packages/node` 就编了约 2 小时 52 分钟，其次是 Rust 编译机端约 63 分钟、内核约 25 分钟、ffmpeg 约 22 分钟。Node.js 只被「网易云解锁」`luci-app-unblockneteasemusic` 拉进来（daed 不依赖它），所以编到最后打包阶段时超时了。
-- **现在的处理**：job 开始约 5 小时 35 分钟时，「编译」一步会主动停下（不再等被强杀），留出时间保存缓存和上传日志，Summary 里会写「编译时间不够，已主动停止」。这时**再 Run workflow 一次**，会用缓存接着编，第二次快很多。
-- **缓存了什么**（Actions → Caches 里能看到，键都带机型和对应上游短 SHA：x86_64 看 ImmortalWrt，雅典娜/亚瑟看 LibWrt）：
-  - `dl-<机型>-<SHA>`：源码包，下载完立刻保存
-  - `toolchain-<机型>-<SHA>`：编译机工具和交叉工具链（`staging_dir/host`、`staging_dir/toolchain-*`、`build_dir/host`、`build_dir/toolchain-*`），编完工具链立刻保存，省约 40 分钟。`build_dir` 里有「已编完」的标记，只存 `staging_dir` 的话还是会整套重编，所以两边都存
-  - `ccache-<机型>-<SHA>-<运行号>`：C/C++ 编译缓存（node、内核、各个包都会用到，上限 8G），每次结束（成功、失败、主动停止）都存一份新的，并自动删掉同机型旧的。「ccache 统计」一步会打印命中率
-  - 上游更新后找不到同 SHA 的缓存，会退回用同机型最近一份，相当于本地 `git pull` 后增量编译
-- **大小风险**：GitHub 每个仓库缓存总共约 10GB，超了按「最久没用」自动删。x86_64 一台的三份缓存压缩后大约 6–8GB，三台一起编可能超额，导致别的机型缓存被挤掉（只影响速度，不影响结果）。如果经常被挤掉，可以考虑不缓存 `build_dir/host`（但工具会重编约 25 分钟），或在 Actions → Caches 里手动删。
-- **本地编译没有 6 小时限制**，见下面「本地编译」，源码目录本身就是增量的。
-- **用本地编译的结果给 CI 提速**：本地编完后把工具链和 ccache 上传到一个专用的预发布 Release（`ci-cache-<机型>-<上游短SHA>`），CI 会优先从那里恢复，见下面「CI 缓存：本地编译后上传给 Actions 用」。
-
-## 产物在哪
-
-- **Releases**：tag 为日期（`YYYY-MM-DD` 或带机型后缀），编译成功后把对应机型产物挂到该 Release；`all` 时三台都成功才发
-- 每次运行的 **Artifacts**（`x86_64` / `athena` / `arthur`），只成功一部分也能下
-
-常用文件：
-
-- x86_64：`*-generic-squashfs-combined-efi.img.gz` 等
-- 雅典娜：`*-jdcloud_re-cs-02-squashfs-factory.bin`（U-Boot 网页首刷）/ `*-sysupgrade.bin`（已刷 OpenWrt 后升级）
-- 亚瑟：`*-jdcloud_re-ss-01-squashfs-factory.bin` / `*-sysupgrade.bin`
-- 校验：`sha256sums-x86_64`、`sha256sums-athena`、`sha256sums-arthur`；以及 `*.manifest`
-
-## 编译日志怎么看
-
-编译在 ubuntu-24.04 上跑（自带 clang 18；内核 6.18 的 `bpf-headers` 要求 clang ≥ 15，22.04 的 clang 14 不够）。为了让网页上的日志打得开，完整输出不再打到控制台：
-
-- **控制台**：「编译」这一步只显示每个包的进度行（` make[2] -C package/... compile`）和报错行。失败时会自动用 `make -j1 V=s` 重试，然后把这些折叠起来显示：编译失败的包、`logs/` 里的 `error.txt`、第一个报错前后的几十行、详细日志最后 200 行。失败的包也会写在运行页面顶部的 **Summary** 里。
-- **完整日志**：运行页面最底部 **Artifacts** 里的 `logs-<机型>`（成功失败都会上传，保留 14 天），解压后是 `build-logs-<机型>.tar.gz`，里面有：
-  - `build.log`：并行编译的完整输出
-  - `build-verbose.log`：失败后 `make -j1 V=s` 的详细输出（看真正的报错用这个）
-  - `logs/<包路径>/compile.txt`：每个包单独的编译日志（`BUILD_LOG=1`），失败的包目录里有 `error.txt`
-  - `download.log`、`feeds-install.log`、`.config`
-
-## 本地编译
-
-不想用 GitHub Actions，也可以在自己的 Linux 上编：推荐 **Ubuntu 24.04**（和 CI 一样），也支持 **Debian 12 / 13**（`--deps` 会自动换成 Debian 的包名，Debian 12 另装 clang-16）。x86_64 的 6.18 内核要求 clang ≥ 15，Ubuntu 22.04 自带的 clang 14 不行。Windows 用户见下面「在 Windows / WSL 里编译」。步骤和 CI 完全一致：上游仓库 / 分支、apt 依赖列表都直接从 `.github/workflows/build.yml` 读。
-
-准备：
-
-```bash
-git clone https://github.com/Ghostpanter/openwrt-builder.git
-cd openwrt-builder
-chmod +x scripts/*.sh && git config core.fileMode false   # 第一次：加执行权限，并让 git 忽略权限变化，以后 git pull 不冲突
-./scripts/local-build.sh --deps                            # 第一次：sudo apt 安装编译依赖（和 CI 同一份列表）
-```
-
-> 不想改权限也可以直接用 `bash scripts/local-build.sh ...`，效果一样。
-
-编译：
-
-```bash
-./scripts/local-build.sh x86     # x86_64（ImmortalWrt master），也可以写 x86_64
-./scripts/local-build.sh ys      # 亚瑟 AX1800 Pro（LibWrt 25.12-nss），也可以写 arthur
-./scripts/local-build.sh ydn     # 雅典娜 AX6600（LibWrt 25.12-nss），也可以写 athena
-```
-
-选项：
-
-| 选项 | 作用 |
-| --- | --- |
-| `-j N` | 编译线程数，默认 CPU 核数 |
-| `--clean` | 删掉已有源码重新克隆（保留 `dl/` 下载缓存） |
-| `--config-only` | 只做到 `make defconfig`，不下载不编译，适合先看配置 |
-| `--menuconfig` | `make defconfig` 之后打开 `make menuconfig` 手动调整（改动只在本地源码树里） |
-| `--deps` | 先安装依赖；只给 `--deps` 不给机型就只装依赖 |
-| `-h` / `--help` | 中文帮助 |
+| 机型 | 配置 | 上游 | target / device |
+|---|---|---|---|
+| x86_64 | `configs/x86_64.config` | ImmortalWrt `master` | `x86/64` / `generic` |
+| 雅典娜 AX6600（RE-CS-02） | `configs/athena.config` | LibWrt `25.12-nss` | `qualcommax/ipq60xx` / `jdcloud_re-cs-02` |
+| 亚瑟 AX1800 Pro（RE-SS-01） | `configs/arthur.config` | LibWrt `25.12-nss` | `qualcommax/ipq60xx` / `jdcloud_re-ss-01` |
 
 说明：
 
-- 每个机型一个目录：源码在 `build/<机型>/openwrt`（`x86_64` / `arthur` / `athena`），互不影响；`build/` 已加入 `.gitignore`。
-- 再次运行会把源码 `git fetch` 到上游最新、重新复制 `files/`、重新 feeds 和载入配置，然后**增量编译**（第一次 x86_64 要几个小时，之后快很多）。
-- 控制台只显示进度和报错，完整日志在 `build/<机型>/logs/`：`build.log`、失败时自动 `make -j1 V=s` 重试的 `build-verbose.log`、每个包的 `packages/<包路径>/compile.txt`（失败的包有 `error.txt`），以及 `feeds-*.log`、`download.log`、`defconfig.log`。
-- 编译成功后会打印固件路径，在 `build/<机型>/openwrt/bin/targets/` 下。
-- 不能用 root 运行（OpenWrt 拒绝 root 编译）；磁盘建议至少 100 GB 空闲，不足会提示。
+- 网络共享用 **Samba4**（不用 ksmbd）；不装 attendedsysupgrade / frp / nps / keepalived。
+- 代理类（OpenClash / PassWall / Nikki）都编进 x86，**运行时同一时间只开一个**；雅典娜/亚瑟只编 OpenClash。
+- 亚瑟 512MB 内存：OpenClash + Samba4 同开可能吃紧，不用时在启动项关掉。
+- x86 第三方由 `scripts/x86_64-extra-packages.sh` 拉取（当前仍 =y）：MosDNS、Tailscale、Lucky、定时控制、Nikki、clash-exporter（脚本仍含 EasyTier，但配置里未选）。
+- 显式包数量：x86_64 **270** · 雅典娜 **90** · 亚瑟 **90**。
 
-### 在 Windows / WSL 里编译
-
-可以在 Windows 的 **WSL2** 里编（WSL1 不行，脚本会拒绝）。发行版装在哪个盘（例如 E:）随意，那只是虚拟磁盘文件 `ext4.vhdx` 的位置。
-
-1. PowerShell 里进入发行版：`wsl -d Debian`（之后的命令都在 WSL 的 Linux 终端里执行，不要在 PowerShell / cmd / Git Bash 里直接运行脚本）
-2. **仓库必须放在 WSL 自己的 Linux 目录（`~` 或 `/home/...`）**，不能放在 `/mnt/c`、`/mnt/e` 这类 Windows 盘上（NTFS 大小写不敏感、权限不对、慢几十倍，脚本会直接报错）：
-
-   ```bash
-   cd ~
-   git clone https://github.com/Ghostpanter/openwrt-builder.git
-   cd openwrt-builder
-   chmod +x scripts/*.sh && git config core.fileMode false
-   ./scripts/local-build.sh --deps     # 第一次装依赖
-   ./scripts/local-build.sh x86        # 或 ys / ydn
-   ```
-3. 资源：WSL2 默认只用 Windows 一半内存，x86_64 建议 **≥ 16 GB**。在 Windows 的 `%UserProfile%\.wslconfig` 写：
-
-   ```ini
-   [wsl2]
-   memory=16GB
-   swap=16GB
-   ```
-   然后 PowerShell 执行 `wsl --shutdown` 再进入。安装发行版的那个盘（例如 E:）要留 **100 GB 以上**，编译时虚拟磁盘会一直涨。
-4. 脚本会自动识别 WSL（打印「环境：WSL（…）」或「环境：本机 Linux（…）」），并在编译时从 `PATH` 去掉 `/mnt/c/...` 这类 Windows 路径（带空格、括号会让 OpenWrt 编译出错）。
-5. 想把结果上传给 CI 用（下一节）：**Debian 13 的 glibc（2.41）比 CI 的 Ubuntu 24.04（2.39）新，编出来的工具链 CI 用不了**，打包脚本会拒绝。要给 CI 提速，请在 WSL 里装 **Ubuntu 24.04**（最稳）或 **Debian 12** 来编，也可以装在 E:，例如 `wsl --install -d Ubuntu-24.04 --location E:\WSL\Ubuntu-24.04`（老版本 wsl 没有 `--location` 时用 `wsl --export` / `wsl --import` 搬到 E:）。只在本地编固件的话 Debian 13 没问题。
-6. **国内网络：两种模式**（三个脚本都支持 `--proxy URL`，也可写 `--proxy=URL`，或先 `export PROXY=URL`）
-   - **给了 `--proxy`（Clash / HTTP 代理）**：本次运行的**所有**联网步骤都走它——git 克隆 / 更新、feeds update、额外插件的 git clone、`make download`（wget/curl）、编译阶段 Go 包下载模块、pip、cargo、`--deps` 的 apt、gh 上传。脚本会 export `http_proxy` / `https_proxy` / `all_proxy`（大小写都设），并在 `make` 命令行上再显式传一遍，嵌套子 make 和 go 一定拿得到；apt 用临时配置文件，用完就删。此时 GOPROXY 默认 `https://proxy.golang.org|https://goproxy.cn,direct`（经代理走官方，失败再试 goproxy.cn），不设 pip 镜像，cargo 用官方 crates.io（经代理）。不改 `git config --global`，不在 `/etc/apt` 留永久配置。shell 里已经 export 了 `https_proxy` 等同于给了 `--proxy`。
-   - **不给 `--proxy`**：直连，不需要 Clash，自动用国内公开加速地址：`GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct`（GOSUMDB 校验照常）、`PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`（宿主机 Python 包，requirements 带哈希校验）、crates.io → rsproxy.cn 稀疏索引 `sparse+https://rsproxy.cn/index/`（Rust 包编译时下载 crate，Cargo.lock 校验照常）。源码（GitHub 上的 ImmortalWrt / LibWrt 和 feeds）和 `make download` 仍按上游原地址和 OpenWrt 自带镜像下载，GitHub 不通时还是要 `--proxy`。`--goproxy URL|off`、`--pip-index URL|off`、`--cargo-mirror rsproxy|ustc|tuna|URL|off` 可单独改，`--no-mirror` 全部关掉。
-
-   ```bash
-   ./scripts/local-build.sh x86                                                    # 不走代理：公开加速
-   ./scripts/local-build.sh --proxy http://192.168.31.246:7890 --deps             # Clash 不带认证
-   ./scripts/local-build.sh --proxy 'http://用户名:密码@192.168.31.246:7893' x86   # Clash 带认证，全部走代理
-   ```
-
-   - WSL2 默认（NAT 网络）里 `127.0.0.1` 是 WSL 自己，不是 Windows：请填 Windows 或路由器的局域网 IP，并在 Clash 打开「允许局域网」（或在 `.wslconfig` 设 `networkingMode=mirrored`）。建议用 Clash 的 HTTP / mixed 端口，wget 不支持 socks5。
-   - 密码里有 `@ : / # $` 等字符要写成 `%40 %3A %2F %23 %24`。**不要把带密码的地址写进仓库、脚本或 issue**；直接写在命令行会留在 `~/.bash_history`，可以在命令前加一个空格（Ubuntu 默认 `HISTCONTROL=ignoreboth` 不记录），或者 `read -rs PROXY && export PROXY` 输入后再运行脚本。
-7. **Go 包（crowdsec-firewall-bouncer、adguardhome、tailscale、mosdns 等约 20 个）在编译阶段才用 go 下载依赖**，`make download` 不管这一步，国内直连 `proxy.golang.org` 常超时，表现为 `ERROR: package/feeds/packages/<包> failed to build`。`local-build.sh` 默认设 `GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct`（shell 里已 export `GOPROXY` 就沿用；`--goproxy URL` 自定义，`--goproxy off` 不设）。失败时脚本会打印失败包 `logs/packages/.../compile.txt` 的最后 60 行，真正的报错在那里。修好网络后直接重跑同一条命令即可（增量，不用 `--clean`）；**自己进源码树手动 `make` 时不会经过脚本，GOPROXY（和代理）要自己 export**，否则还是直连 `proxy.golang.org`。只重编一个包：
-
-   ```bash
-   export GOPROXY=https://goproxy.cn,direct
-   # 要走 Clash 时再加：export http_proxy='http://用户名:密码@192.168.31.246:7893' https_proxy="$http_proxy"
-   cd ~/openwrt-builder/build/x86_64/openwrt
-   make package/feeds/packages/crowdsec-firewall-bouncer/{clean,compile} -j1 V=s
-   ```
-
-   单个包好了以后，回仓库根目录重跑 `./scripts/local-build.sh --proxy ... x86` 继续编剩下的（增量）。
-8. **Rust 包（shadowsocks-rust 等）在编译阶段才用 cargo 下载 crate**，缓存在 `build/<机型>/openwrt/dl/cargo`（OpenWrt 的 `CARGO_HOME`）。
-   - 镜像：`local-build.sh` 每次编译前写 `dl/cargo/config.toml`，把 crates.io 源替换成镜像（不走代理默认 rsproxy.cn；给了 `--proxy` 默认官方 crates.io 经代理；`--cargo-mirror rsproxy|ustc|tuna|sparse+https://...|off` 可改，也可 `export CARGO_MIRROR=...`）。只动带 `managed-by: openwrt-builder` 标记的文件，自己写的 `config.toml` 不覆盖；`off` 会删掉之前生成的文件。CARGO_HOME 的配置优先级最低，rustc 源码包（x.py）自带 `.cargo/config.toml` 指向 vendor 目录，所以**宿主机 Rust 工具链编译不受镜像影响**。
-   - 坏缓存：中途断网 / 被杀会留下截断的 `.crate`，之后一直报 `failed to unpack ... unexpected end of file`。`local-build.sh` 编译前会自动跑 `scripts/fix-cargo-cache.sh`（`gzip -t` 检查每个 `.crate`，删掉坏的和没解压完的目录，不联网）；手动：
-
-   ```bash
-   bash ~/openwrt-builder/scripts/fix-cargo-cache.sh ~/openwrt-builder/build/x86_64/openwrt
-   cd ~/openwrt-builder/build/x86_64/openwrt
-   make package/feeds/packages/shadowsocks-rust/{clean,compile} -j1 V=s
-   ```
-
-### CI 缓存：本地编译后上传给 Actions 用
-
-x86_64 在 Actions 上第一次编译会撞 6 小时上限（node 一个包就要近 3 小时）。可以先在本地编一遍，把最耗时的部分上传到本仓库的一个**预发布 Release**（不是固件，不进 git 历史），之后 Actions 自动下载复用：
-
-```bash
-./scripts/local-build.sh x86        # 1. 本地完整编译一遍（ys / ydn 同理）
-./scripts/pack-ci-cache.sh x86      # 2. 打包到 build/ci-cache/x86_64-<上游短SHA>/
-sudo apt install gh && gh auth login   # 3. 第一次：安装并登录 GitHub CLI
-./scripts/upload-ci-cache.sh x86    # 4. 上传到 Release ci-cache-x86_64-<上游短SHA>
-```
-
-然后去 Actions 手动 **Run workflow**，机型选 `x86_64`，**勾选 force**。
-
-需要代理时每一步加 `--proxy`（打包不联网，`pack-ci-cache.sh` 接受这个参数但不起作用）：
-
-```bash
-./scripts/local-build.sh --proxy http://192.168.31.246:7890 x86
-./scripts/pack-ci-cache.sh --proxy http://192.168.31.246:7890 x86
-export https_proxy=http://192.168.31.246:7890 && gh auth login   # gh 登录也要联网
-./scripts/upload-ci-cache.sh --proxy http://192.168.31.246:7890 x86
-```
-
-- **上传了什么**（每个文件按 1900 MB 切片，GitHub Release 单文件上限 2 GB）：
-  - `toolchain.tar.zst.partNN`：`staging_dir/host`、`staging_dir/toolchain-*`、`build_dir/host`、`build_dir/toolchain-*`（编译机工具 + 交叉工具链，约 1.5 GB），CI 恢复后「编译工具和工具链」一步只要几分钟
-  - `ccache.tar.zst.partNN`：本地的 ccache（约 2–3 GB），node、内核、rust 等 C/C++ 编译大量命中（`--no-ccache` 不打包）
-  - `dl.tar.zst.partNN`：源码包（3–4 GB，默认不打包，`--with-dl` 才打包）
-  - `ci-cache.env`（机型、上游 SHA、本地源码路径、系统和 glibc 版本）、`SHA256SUMS`
-  - 合计一般 **4–6 GB**（带 dl 约 6–10 GB）；Release 文件不占 Actions 缓存的 10 GB 额度
-- **tag 命名**：`ci-cache-<机型>-<上游短SHA>`，机型是 `x86_64` / `athena` / `arthur`，短 SHA 是 12 位，和 CI 用的一致（x86_64 看 ImmortalWrt master，雅典娜/亚瑟看 LibWrt）。本地源码就是上游最新时，两边 SHA 一样
-- **CI 怎么用**：「恢复缓存：本地上传的 Release（ci-cache）」一步优先找 SHA 完全一致的；上游已经又更新了就用该机型最新的一份（增量，只重编有变化的部分）；一个都没有就跳过。Release 的优先级高于 Actions 缓存，恢复了工具链就不再用 Actions 的工具链缓存；运行页面 Summary 里会写恢复了什么
-- **安全检查**：CI 会校验 SHA256、检查打包机 glibc 不比 runner 新、用 `ldd` 检查所有编译机工具的动态库，有问题就丢弃这份工具链，回到 Actions 缓存 / 从头编，不会让编译失败。本地源码的绝对路径（例如 `/home/你/openwrt-builder/build/x86_64/openwrt`）会写进部分工具里，CI 会在 runner 上把这个路径软链接到自己的源码目录
-- `upload-ci-cache.sh` 可以重复运行：Release 不存在就创建（预发布，标题写明「不是固件」），已完整上传的切片（同名同大小）自动跳过、没传完的删掉重传，每片失败自动重试（`--retries N`，默认 5），删掉多余的旧切片；上传前会把大于 500M 的切片在本地重新切小（`--part-size 500M`，`0` 不切），走代理传 1 GB 以上单文件容易 `EOF` 断开；默认用 curl（HTTP/1.1、有进度、卡住 2 分钟自动重试），`--gh` 改回 gh 上传；只上传上面这些缓存文件，不会上传固件。加 `--prune` 会删掉同机型其他旧 SHA 的缓存 Release
-- 打包要求：工具和工具链已完整编完（四个目录都在），否则脚本会报错；建议在 Ubuntu 24.04（或 Debian 12）上编，见上一节
-
-## x86 首次开机自动分区
-
-x86 固件里带了首次开机脚本 `files/x86_64/etc/uci-defaults/99-auto-data-partition`（只打进 x86 固件）：
-
-- 刷整盘镜像后首次开机，用系统盘剩余空间新建第 3 个分区，格式化为 ext4（卷标 `data`），挂载到 **`/opt/data`**
-- 只在空闲空间上新建分区，不动引导分区和根分区；第 3 个分区已存在且是 ext4 时只补挂载配置、不格式化
-- 装了 Docker 时，把 Docker 数据目录指到 `/opt/data/docker`
-- 日志：`/root/auto-data-partition.log`
-
-注意：sysupgrade 升级一般会保留这个分区；用整盘镜像重新写盘会覆盖它。
-
-## x86_64 插件清单（旁路由全功能版）
-
-面向 Intel 3965U / 16G / 64G 旁路由。除 MosDNS、Tailscale、Lucky、EasyTier、定时控制、Nikki、clash-exporter 外，全部来自 ImmortalWrt 自带的 `packages` / `luci` feeds；这七个由 `scripts/x86_64-extra-packages.sh` 在编译时拉取（只对 x86_64 生效）。Docker 里的应用（Jellyfin、Home Assistant 等）不集成进固件，刷机后自己在 Docker 里装。
+## x86_64（270）
 
 | 分类 | 包名 | 中文名 | 来源 |
 |---|---|---|---|
-| 系统 | `luci` + `luci-i18n-base-zh-cn` | LuCI 网页界面（简体中文） | ImmortalWrt luci |
-| 系统 | `default-settings-chn` | 国内默认设置（上海时区、国内 NTP 和软件源镜像） | ImmortalWrt 主仓库 |
-| 系统 | `luci-i18n-firewall-zh-cn` | 防火墙（中文） | ImmortalWrt luci |
-| 系统 | `luci-theme-argon` | Argon 主题 | ImmortalWrt luci |
-| 系统 | （已移除）`luci-app-attendedsysupgrade` | 只用离线 sysupgrade | — |
-| 系统 | `luci-app-ttyd` | 网页终端 | ImmortalWrt luci |
-| 系统 | `htop` `nano` `curl` `wget-ssl` `bash` `openssh-sftp-server` | 常用命令行工具 / SFTP | ImmortalWrt packages |
-| 核显 / CPU | `kmod-drm-i915` | Intel 核显驱动（提供 `/dev/dri`） | ImmortalWrt 主仓库 |
-| 核显 / CPU | `i915-firmware-dmc` `i915-firmware-guc` `i915-firmware-huc` | 核显固件 | ImmortalWrt 主仓库 |
-| 核显 / CPU | `intel-microcode` | Intel CPU 微码 | ImmortalWrt 主仓库 |
-| 磁盘 | `luci-app-diskman` | 磁盘管理 | ImmortalWrt luci |
-| 磁盘 | `parted` `e2fsprogs` `block-mount` `kmod-fs-ext4` `lsblk` | 分区 / 格式化 / 挂载点（首次开机自动分区要用） | ImmortalWrt 主仓库 / packages |
-| 磁盘 | `kmod-usb3` `kmod-usb-storage(-uas)` `kmod-fs-ntfs3` `kmod-fs-exfat` `kmod-fs-vfat` | USB 3.0 存储、NTFS/exFAT/FAT 支持 | ImmortalWrt 主仓库 |
-| DNS | `dnsmasq-full`（替换 `dnsmasq`） | 完整版 DNS/DHCP（OpenClash、PassWall 必需） | ImmortalWrt 主仓库 |
-| DNS | `luci-app-adguardhome` | AdGuard Home 广告过滤 | ImmortalWrt luci |
-| DNS | `luci-app-mosdns`（含 `mosdns` `geo2txt`） | MosDNS 分流 DNS | [sbwml/luci-app-mosdns](https://github.com/sbwml/luci-app-mosdns) `v5` |
-| 代理 | `luci-app-openclash` | OpenClash（nftables 版，界面自带中文） | ImmortalWrt luci |
-| 代理 | `luci-app-passwall` | PassWall（nftables 版；默认带 Xray、sing-box、Haproxy 等） | ImmortalWrt luci |
-| 组网 | `luci-proto-wireguard` `wireguard-tools` `qrencode` | WireGuard（在「网络 → 接口」里添加，可生成二维码） | ImmortalWrt luci / 主仓库 / packages |
-| 组网 | `luci-app-tailscale` | Tailscale 异地组网 | [asvow/luci-app-tailscale](https://github.com/asvow/luci-app-tailscale) |
-| 组网 | `luci-app-zerotier` | ZeroTier 异地组网 | ImmortalWrt luci |
-| 流量 | `luci-app-sqm` | SQM 智能队列 / 限速 | ImmortalWrt luci |
-| 流量 | `luci-app-mwan3` | 多线多拨负载均衡 | ImmortalWrt luci |
-| 共享 | `luci-app-samba4` `samba4-server` | 网络共享（SMB，Samba 4；不装 ksmbd） | ImmortalWrt luci / packages |
-| 共享 | `luci-app-nfs` | NFS 共享 | ImmortalWrt luci |
-| Docker | `luci-app-dockerman` `dockerd` `docker` `docker-compose` | Docker 及管理界面 | ImmortalWrt luci / packages |
-| 下载 | `luci-app-aria2` | Aria2 下载 | ImmortalWrt luci |
-| 下载 | `luci-app-qbittorrent` | qBittorrent 下载 | ImmortalWrt luci |
-| 多媒体 / 开发 | `ffmpeg` `ffprobe` | 音视频处理 | ImmortalWrt packages |
-| 多媒体 / 开发 | `python3` `python3-pip` | Python 3 | ImmortalWrt packages |
-| 代理 | `luci-app-homeproxy` | HomeProxy（sing-box，nftables；sing-box 不带 NaiveProxy 出站，见下面「sing-box」） | ImmortalWrt luci |
-| 监控 | `luci-app-nlbwmon` | 网络带宽监视（按设备统计流量） | ImmortalWrt luci |
-| 监控 | `luci-app-netdata` | Netdata 实时监控（本地网页，已关 Netdata Cloud） | ImmortalWrt luci |
-| 监控 | `luci-app-statistics` | 实时统计 / 历史图表（collectd） | ImmortalWrt luci |
-| 监控 | `prometheus-node-exporter-lua` + 采集器 `-nat_traffic` `-netstat` `-openwrt` `-thermal` `-hwmon` `-uci_dhcp_host` `-textfile` `-snmp6` `-mwan3` `-filesystem` `-ethtool` | Prometheus 指标导出（LAN 9100 端口，默认开启；lua 版，不装 ucode 版） | ImmortalWrt packages |
-| 监控 | `clash-exporter` | OpenClash / Mihomo 流量指标（LAN 2112 端口，默认开启；自动读 OpenClash 面板端口和密码） | Ghostpanter/clash-exporter |
+| 系统 / 界面 | `acpid` | ACPI 事件守护 | ImmortalWrt packages |
+| 系统 / 界面 | `chrony` | Chrony 时间同步 | ImmortalWrt packages |
+| 系统 / 界面 | `default-settings-chn` | 国内默认设置（上海时区 / NTP / 镜像） | ImmortalWrt 主仓库 |
+| 系统 / 界面 | `input-support` | 输入设备支持（配合 acpid） | ImmortalWrt 主仓库 |
+| 系统 / 界面 | `irqbalance` | 中断均衡 | ImmortalWrt packages |
+| 系统 / 界面 | `luci` | LuCI 网页界面 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-app-autoreboot` | 定时重启 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-app-chrony` | Chrony 界面 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-app-commands` | 自定义命令 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-app-irqbalance` | 中断均衡界面 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-app-ramfree` | 释放内存 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-app-ttyd` | 网页终端 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-i18n-autoreboot-zh-cn` | 定时重启 · 简体中文 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-i18n-base-zh-cn` | LuCI 基础界面 · 简体中文 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-i18n-chrony-zh-cn` | Chrony 界面 · 简体中文 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-i18n-commands-zh-cn` | 自定义命令 · 简体中文 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-i18n-firewall-zh-cn` | 防火墙 · 简体中文 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-i18n-irqbalance-zh-cn` | 中断均衡界面 · 简体中文 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-i18n-ramfree-zh-cn` | 释放内存 · 简体中文 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-i18n-ttyd-zh-cn` | 网页终端 · 简体中文 | ImmortalWrt luci |
+| 系统 / 界面 | `luci-theme-argon` | Argon 主题 | ImmortalWrt luci |
+| 系统 / 界面 | `zram-swap` | zram 压缩内存交换 | ImmortalWrt 主仓库 |
+| 网络工具 | `arp-scan` | 局域网 ARP 扫描 | ImmortalWrt packages |
+| 网络工具 | `bind-dig` | dig DNS 查询 | ImmortalWrt packages |
+| 网络工具 | `conntrack` | 连接跟踪工具 | ImmortalWrt packages |
+| 网络工具 | `conntrackd` | 连接跟踪同步守护 | ImmortalWrt packages |
+| 网络工具 | `drill` | drill DNS 查询 | ImmortalWrt packages |
+| 网络工具 | `ethtool-full` | 完整 ethtool | ImmortalWrt packages |
+| 网络工具 | `iftop` | iftop 实时流量 | ImmortalWrt packages |
+| 网络工具 | `ip-full` | 完整 ip 命令 | ImmortalWrt packages |
+| 网络工具 | `iperf3-ssl` | iperf3 测速（SSL） | ImmortalWrt packages |
+| 网络工具 | `luci-app-arpbind` | IP/MAC 绑定 | ImmortalWrt luci |
+| 网络工具 | `luci-app-upnp` | UPnP / NAT-PMP | ImmortalWrt luci |
 | 网络工具 | `luci-app-wol` | 网络唤醒 | ImmortalWrt luci |
-| 网络工具 | `iperf3-ssl` `tcpdump` `ethtool-full` `mtr-json` | 测速 / 抓包 / 网卡工具 / 路由追踪 | ImmortalWrt 主仓库 / packages |
-| 守护 | `luci-app-watchcat` | 网络看门狗（断网自动重启接口或设备） | ImmortalWrt luci |
-| 守护 | `luci-app-autoreboot` | 定时重启 | ImmortalWrt luci |
-| DDNS / 穿透 | `luci-app-ddns-go` | DDNS-GO 动态域名 | ImmortalWrt luci |
-| DDNS / 穿透 | `luci-app-frpc` | FRP 内网穿透客户端 | ImmortalWrt luci |
-| DDNS / 穿透 | `luci-app-lucky`（含 `lucky`） | Lucky（DDNS、端口转发、反向代理、STUN 穿透等） | [gdy666/luci-app-lucky](https://github.com/gdy666/luci-app-lucky) |
-| 证书 | `luci-app-acme` | ACME 证书自动申请（acme.sh） | ImmortalWrt luci |
-| 网盘 / 文件 | `luci-app-openlist` | OpenList 网盘挂载（AList 社区分支） | ImmortalWrt luci |
-| 网盘 / 文件 | `luci-app-filebrowser` | LuCI 文件浏览 | ImmortalWrt luci |
-| 网盘 / 文件 | `filebrowser` | Filebrowser 网页文件管理（默认关闭，端口 8989） | ImmortalWrt packages |
-| 网盘 / 文件 | `luci-app-filemanager` | LuCI 文件管理器（和上面的文件浏览、Filebrowser 功能有重叠，挑顺手的用） | ImmortalWrt luci |
-| 内核 | `kmod-tcp-bbr` | BBR 拥塞控制（默认启用） | ImmortalWrt 主仓库 |
-| 内核 | `kmod-tun` `kmod-nft-tproxy` `kmod-nft-socket` | 代理用的 TUN / 透明代理模块 | ImmortalWrt 主仓库 |
-| 内核 | `kmod-vxlan` `kmod-macvlan` `kmod-veth` | VXLAN / macvlan / veth（Docker、虚拟网络） | ImmortalWrt 主仓库 |
-| 网卡驱动 | `kmod-igc` `kmod-igb` `kmod-e1000e` | Intel 2.5G / 千兆网卡 | ImmortalWrt 主仓库 |
-| 网卡驱动 | `kmod-r8125` `kmod-r8168` | Realtek 2.5G / 千兆网卡（厂商驱动，不装 r8169） | ImmortalWrt 主仓库 |
-| USB 网卡 | `kmod-usb-net-rtl8152` `kmod-usb-net-asix-ax88179` | Realtek / ASIX USB 网卡 | ImmortalWrt 主仓库 |
-| USB 网卡 | `kmod-usb-net-cdc-ether` `kmod-usb-net-cdc-ncm` `kmod-usb-net-rndis` | 手机 USB 共享网络（安卓） | ImmortalWrt 主仓库 |
-| USB 网卡 | `kmod-usb-net-ipheth` `usbmuxd` | 手机 USB 共享网络（iPhone） | ImmortalWrt 主仓库 / packages |
-| 存储驱动 | `kmod-nvme` `kmod-ata-ahci` | NVMe / SATA 硬盘 | ImmortalWrt 主仓库 |
-| 系统 | `irqbalance` | 中断均衡（默认开启） | ImmortalWrt packages |
-| 系统 | `zram-swap` | 压缩内存交换（zram，默认 zstd 压缩） | ImmortalWrt 主仓库 |
-| 系统工具 | `smartmontools` `hdparm` `lm-sensors` | 硬盘健康 / 硬盘参数 / 温度传感器 | ImmortalWrt packages |
-| 系统工具 | `pciutils` `usbutils` | lspci / lsusb | ImmortalWrt packages |
-| 系统工具 | `fdisk` `resize2fs` `losetup` | 分区 / 扩容 ext4 / 回环设备 | ImmortalWrt 主仓库 |
-| 系统工具 | `coreutils-*`（ls、cp、sort、timeout 等 33 个） `findutils` `grep` `diffutils` | GNU 版命令行工具（替换 busybox 的同名命令） | ImmortalWrt packages |
-| 网络诊断 | `ip-full` `bind-dig` `conntrack` `iftop` `nload` | 完整 ip 命令 / DNS 查询 / 连接跟踪 / 实时流量 | ImmortalWrt 主仓库 / packages |
-| 网络诊断 | `speedtest-go` | 命令行测速（speedtest.net 节点） | ImmortalWrt packages |
-| 界面 | `luci-app-upnp` | UPnP / NAT-PMP（默认关闭） | ImmortalWrt luci |
-| 界面 | `luci-app-commands` | 自定义命令 | ImmortalWrt luci |
-| 硬件 | `kmod-hwmon-coretemp` `kmod-i2c-i801` | CPU 温度 / 主板 SMBus（配合 lm-sensors） | ImmortalWrt 主仓库 |
-| 文件系统 | `kmod-fs-btrfs` `kmod-fs-xfs` `kmod-fs-f2fs` `ntfs-3g` | Btrfs / XFS / F2FS / NTFS（FUSE 版，和 ntfs3 内核驱动并存） | ImmortalWrt 主仓库 / packages |
-| 存储 | `mdadm` `lvm2` | 软 RAID / LVM 逻辑卷 | ImmortalWrt packages |
-| 内核 | `kmod-sched-bpf` `bpftool-minimal` | eBPF 流量调度 / bpftool | ImmortalWrt 主仓库 |
+| 网络工具 | `luci-i18n-arpbind-zh-cn` | IP/MAC 绑定 · 简体中文 | ImmortalWrt luci |
+| 网络工具 | `luci-i18n-upnp-zh-cn` | UPnP / NAT-PMP · 简体中文 | ImmortalWrt luci |
+| 网络工具 | `luci-i18n-wol-zh-cn` | 网络唤醒 · 简体中文 | ImmortalWrt luci |
+| 网络工具 | `mtr-json` | mtr 路由追踪 | ImmortalWrt packages |
+| 网络工具 | `ncat` | ncat | ImmortalWrt packages |
+| 网络工具 | `nload` | nload 实时流量 | ImmortalWrt packages |
+| 网络工具 | `socat` | socat | ImmortalWrt packages |
+| 网络工具 | `speedtest-go` | 公网测速 | ImmortalWrt packages |
+| 网络工具 | `tcpdump` | tcpdump 抓包 | ImmortalWrt packages |
+| 系统工具 | `bash` | Bash | ImmortalWrt packages |
+| 系统工具 | `btop` | btop 资源监视 | ImmortalWrt packages |
+| 系统工具 | `coreutils` | GNU coreutils 元包 | ImmortalWrt packages |
+| 系统工具 | `coreutils-base64` | GNU coreutils base64（Base64 编解码） | ImmortalWrt packages |
+| 系统工具 | `coreutils-cp` | GNU coreutils cp（复制文件） | ImmortalWrt packages |
+| 系统工具 | `coreutils-cut` | GNU coreutils cut（按列截取文本） | ImmortalWrt packages |
+| 系统工具 | `coreutils-date` | GNU coreutils date（显示/设置日期） | ImmortalWrt packages |
+| 系统工具 | `coreutils-dd` | GNU coreutils dd（块拷贝） | ImmortalWrt packages |
+| 系统工具 | `coreutils-df` | GNU coreutils df（磁盘空间） | ImmortalWrt packages |
+| 系统工具 | `coreutils-du` | GNU coreutils du（目录占用） | ImmortalWrt packages |
+| 系统工具 | `coreutils-env` | GNU coreutils env（环境变量运行） | ImmortalWrt packages |
+| 系统工具 | `coreutils-head` | GNU coreutils head（显示文件开头） | ImmortalWrt packages |
+| 系统工具 | `coreutils-ls` | GNU coreutils ls（列目录） | ImmortalWrt packages |
+| 系统工具 | `coreutils-md5sum` | GNU coreutils md5sum（MD5 校验） | ImmortalWrt packages |
+| 系统工具 | `coreutils-mktemp` | GNU coreutils mktemp（创建临时文件） | ImmortalWrt packages |
+| 系统工具 | `coreutils-mv` | GNU coreutils mv（移动/重命名） | ImmortalWrt packages |
+| 系统工具 | `coreutils-nohup` | GNU coreutils nohup（后台免挂断运行） | ImmortalWrt packages |
+| 系统工具 | `coreutils-nproc` | GNU coreutils nproc（CPU 核数） | ImmortalWrt packages |
+| 系统工具 | `coreutils-readlink` | GNU coreutils readlink（解析链接） | ImmortalWrt packages |
+| 系统工具 | `coreutils-realpath` | GNU coreutils realpath（绝对路径） | ImmortalWrt packages |
+| 系统工具 | `coreutils-rm` | GNU coreutils rm（删除文件） | ImmortalWrt packages |
+| 系统工具 | `coreutils-seq` | GNU coreutils seq（生成序列） | ImmortalWrt packages |
+| 系统工具 | `coreutils-sha256sum` | GNU coreutils sha256sum（SHA256 校验） | ImmortalWrt packages |
+| 系统工具 | `coreutils-sort` | GNU coreutils sort（排序） | ImmortalWrt packages |
+| 系统工具 | `coreutils-split` | GNU coreutils split（切分文件） | ImmortalWrt packages |
+| 系统工具 | `coreutils-stat` | GNU coreutils stat（文件状态） | ImmortalWrt packages |
+| 系统工具 | `coreutils-stdbuf` | GNU coreutils stdbuf（调整 IO 缓冲） | ImmortalWrt packages |
+| 系统工具 | `coreutils-tail` | GNU coreutils tail（显示文件末尾） | ImmortalWrt packages |
+| 系统工具 | `coreutils-tee` | GNU coreutils tee（输出分流） | ImmortalWrt packages |
+| 系统工具 | `coreutils-timeout` | GNU coreutils timeout（限时运行） | ImmortalWrt packages |
+| 系统工具 | `coreutils-touch` | GNU coreutils touch（修改时间戳/创建文件） | ImmortalWrt packages |
+| 系统工具 | `coreutils-tr` | GNU coreutils tr（字符替换） | ImmortalWrt packages |
+| 系统工具 | `coreutils-truncate` | GNU coreutils truncate（截断文件） | ImmortalWrt packages |
+| 系统工具 | `coreutils-uniq` | GNU coreutils uniq（去重） | ImmortalWrt packages |
+| 系统工具 | `coreutils-wc` | GNU coreutils wc（字数统计） | ImmortalWrt packages |
+| 系统工具 | `curl` | curl | ImmortalWrt packages |
+| 系统工具 | `diffutils` | GNU diffutils | ImmortalWrt packages |
+| 系统工具 | `dmidecode` | 硬件信息 | ImmortalWrt packages |
+| 系统工具 | `file` | file 文件类型 | ImmortalWrt packages |
+| 系统工具 | `findutils` | GNU findutils | ImmortalWrt packages |
+| 系统工具 | `git` | Git | ImmortalWrt packages |
+| 系统工具 | `git-http` | Git HTTP/HTTPS 支持 | ImmortalWrt packages |
+| 系统工具 | `grep` | GNU grep | ImmortalWrt packages |
+| 系统工具 | `htop` | htop 进程监视 | ImmortalWrt packages |
+| 系统工具 | `iotop` | iotop IO 监视 | ImmortalWrt packages |
+| 系统工具 | `less` | less 分页 | ImmortalWrt packages |
+| 系统工具 | `lm-sensors` | 温度传感器 | ImmortalWrt packages |
+| 系统工具 | `lsof` | lsof | ImmortalWrt packages |
+| 系统工具 | `nano` | nano 编辑器 | ImmortalWrt packages |
+| 系统工具 | `openssh-sftp-server` | SFTP 服务端 | ImmortalWrt packages |
+| 系统工具 | `pciutils` | lspci | ImmortalWrt packages |
+| 系统工具 | `procps-ng` | procps-ng 元包 | ImmortalWrt packages |
+| 系统工具 | `procps-ng-free` | procps-ng free（内存使用） | ImmortalWrt packages |
+| 系统工具 | `procps-ng-pgrep` | procps-ng pgrep（按名查找进程） | ImmortalWrt packages |
+| 系统工具 | `procps-ng-pkill` | procps-ng pkill（按名结束进程） | ImmortalWrt packages |
+| 系统工具 | `procps-ng-pmap` | procps-ng pmap（进程内存映射） | ImmortalWrt packages |
+| 系统工具 | `procps-ng-ps` | procps-ng ps（进程列表） | ImmortalWrt packages |
+| 系统工具 | `procps-ng-pwdx` | procps-ng pwdx（进程工作目录） | ImmortalWrt packages |
+| 系统工具 | `procps-ng-slabtop` | procps-ng slabtop（内核 slab 缓存） | ImmortalWrt packages |
+| 系统工具 | `procps-ng-top` | procps-ng top（实时进程监视） | ImmortalWrt packages |
+| 系统工具 | `procps-ng-uptime` | procps-ng uptime（运行时长与负载） | ImmortalWrt packages |
+| 系统工具 | `procps-ng-vmstat` | procps-ng vmstat（虚拟内存统计） | ImmortalWrt packages |
+| 系统工具 | `procps-ng-w` | procps-ng w（登录用户） | ImmortalWrt packages |
+| 系统工具 | `procps-ng-watch` | procps-ng watch（周期执行命令） | ImmortalWrt packages |
+| 系统工具 | `rsync` | rsync | ImmortalWrt packages |
+| 系统工具 | `rsyncd` | rsync 服务端 | ImmortalWrt packages |
+| 系统工具 | `screen` | screen 终端复用 | ImmortalWrt packages |
+| 系统工具 | `sysstat` | sysstat（sar/iostat） | ImmortalWrt packages |
+| 系统工具 | `tmux` | tmux 终端复用 | ImmortalWrt packages |
+| 系统工具 | `tree` | tree 目录树 | ImmortalWrt packages |
+| 系统工具 | `usbutils` | lsusb | ImmortalWrt packages |
+| 系统工具 | `vim-full` | Vim 完整版 | ImmortalWrt packages |
+| 系统工具 | `wget-ssl` | wget（SSL） | ImmortalWrt packages |
+| 磁盘 / 存储 | `block-mount` | 挂载点管理 | ImmortalWrt packages |
+| 磁盘 / 存储 | `e2fsprogs` | ext 文件系统工具 | ImmortalWrt packages |
+| 磁盘 / 存储 | `f2fs-tools` | F2FS 工具 | ImmortalWrt packages |
+| 磁盘 / 存储 | `fdisk` | fdisk 分区 | ImmortalWrt packages |
+| 磁盘 / 存储 | `hdparm` | 硬盘参数 | ImmortalWrt packages |
+| 磁盘 / 存储 | `kmod-ata-ahci` | 内核模块：SATA AHCI 控制器驱动 | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `kmod-fs-autofs4` | 内核模块：autofs 自动挂载文件系统 | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `kmod-fs-btrfs` | 内核模块：Btrfs 文件系统 | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `kmod-fs-exfat` | 内核模块：exFAT 文件系统 | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `kmod-fs-ext4` | 内核模块：ext4 文件系统 | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `kmod-fs-f2fs` | 内核模块：F2FS 文件系统 | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `kmod-fs-ntfs3` | 内核模块：NTFS3 内核读写驱动 | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `kmod-fs-vfat` | 内核模块：FAT/VFAT 文件系统 | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `kmod-fs-xfs` | 内核模块：XFS 文件系统 | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `kmod-loop` | 内核模块：回环块设备 | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `kmod-nbd` | 内核模块：网络块设备 NBD | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `kmod-nvme` | 内核模块：NVMe 固态硬盘驱动 | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `kmod-usb-storage` | 内核模块：USB 存储 | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `kmod-usb-storage-uas` | 内核模块：USB UAS 高速存储协议 | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `kmod-usb3` | 内核模块：USB 3.0 控制器 | ImmortalWrt 主仓库 |
+| 磁盘 / 存储 | `losetup` | 回环设备 | ImmortalWrt packages |
+| 磁盘 / 存储 | `lsblk` | 列出块设备 | ImmortalWrt packages |
+| 磁盘 / 存储 | `luci-app-diskman` | 磁盘管理 | ImmortalWrt luci |
+| 磁盘 / 存储 | `luci-app-hd-idle` | 硬盘休眠 | ImmortalWrt luci |
+| 磁盘 / 存储 | `luci-i18n-diskman-zh-cn` | 磁盘管理 · 简体中文 | ImmortalWrt luci |
+| 磁盘 / 存储 | `luci-i18n-hd-idle-zh-cn` | 硬盘休眠 · 简体中文 | ImmortalWrt luci |
+| 磁盘 / 存储 | `lvm2` | LVM 逻辑卷 | ImmortalWrt packages |
+| 磁盘 / 存储 | `mdadm` | 软 RAID | ImmortalWrt packages |
+| 磁盘 / 存储 | `ntfs-3g` | NTFS（FUSE） | ImmortalWrt packages |
+| 磁盘 / 存储 | `nvme-cli` | NVMe 管理 | ImmortalWrt packages |
+| 磁盘 / 存储 | `parted` | 分区工具 | ImmortalWrt packages |
+| 磁盘 / 存储 | `resize2fs` | ext 分区扩容 | ImmortalWrt packages |
+| 磁盘 / 存储 | `smartmontools` | 硬盘健康 SMART | ImmortalWrt packages |
+| 磁盘 / 存储 | `xfs-mkfs` | XFS 格式化 | ImmortalWrt packages |
+| 监控 | `clash-exporter` | OpenClash/Mihomo Prometheus 指标导出 | Ghostpanter/clash-exporter |
+| 监控 | `luci-app-lldpd` | LLDP 邻居发现 | ImmortalWrt luci |
+| 监控 | `luci-app-nlbwmon` | 网络带宽监视 | ImmortalWrt luci |
+| 监控 | `luci-app-statistics` | 实时统计（collectd） | ImmortalWrt luci |
+| 监控 | `luci-app-watchcat` | 网络看门狗 | ImmortalWrt luci |
+| 监控 | `luci-app-wechatpush` | 微信推送 | ImmortalWrt luci |
+| 监控 | `luci-i18n-lldpd-zh-cn` | LLDP 邻居发现 · 简体中文 | ImmortalWrt luci |
+| 监控 | `luci-i18n-nlbwmon-zh-cn` | 网络带宽监视 · 简体中文 | ImmortalWrt luci |
+| 监控 | `luci-i18n-statistics-zh-cn` | 实时统计（collectd） · 简体中文 | ImmortalWrt luci |
+| 监控 | `luci-i18n-watchcat-zh-cn` | 网络看门狗 · 简体中文 | ImmortalWrt luci |
+| 监控 | `luci-i18n-wechatpush-zh-cn` | 微信推送 · 简体中文 | ImmortalWrt luci |
+| DNS | `dnsmasq-full` | 完整版 DNS/DHCP | ImmortalWrt packages |
+| DNS | `luci-app-adguardhome` | AdGuard Home | ImmortalWrt luci |
+| DNS | `luci-app-mosdns` | MosDNS 分流 DNS | sbwml/luci-app-mosdns |
 | DNS | `luci-app-smartdns` | SmartDNS | ImmortalWrt luci |
-| 分流 | `luci-app-pbr` | 策略路由（和 mwan3 功能重叠，规则别重复） | ImmortalWrt luci |
-| 限速 | `luci-app-eqos` | 按 IP 限速 | ImmortalWrt luci |
-| 组网 / 穿透 | `luci-app-easytier`（含 `easytier`） | EasyTier 去中心化组网 | [EasyTier/luci-app-easytier](https://github.com/EasyTier/luci-app-easytier) |
-| 组网 / 穿透 | `luci-app-cloudflared` | Cloudflare Tunnel | ImmortalWrt luci |
-| 组网 / 穿透 | `luci-app-natmap` | NATMap（NAT1 打洞端口映射） | ImmortalWrt luci |
-| VPN 服务端 | `luci-app-openvpn-server` | OpenVPN 服务器 | ImmortalWrt luci |
-| VPN 服务端 | `luci-app-ipsec-vpnd` | IPsec VPN 服务器（strongSwan） | ImmortalWrt luci |
-| IPTV | `luci-app-udpxy` `luci-app-msd_lite` `luci-app-omcproxy` | IPTV 组播转 HTTP / 组播代理 | ImmortalWrt luci |
-| 安全 | `luci-app-banip` | IP 黑名单封禁 | ImmortalWrt luci |
-| 存储 / 服务 | `luci-app-hd-idle` | 硬盘休眠 | ImmortalWrt luci |
-| 存储 / 服务 | `luci-app-rclone` | Rclone 网盘挂载 / 同步（含两个网页界面） | ImmortalWrt luci |
-| 存储 / 服务 | `luci-app-vsftpd` | FTP 服务器 | ImmortalWrt luci |
-| 存储 / 服务 | `luci-app-minidlna` | DLNA 媒体服务器 | ImmortalWrt luci |
-| 存储 / 服务 | `luci-app-p910nd` | 网络打印服务器（打印机直通） | ImmortalWrt luci |
-| 存储 / 服务 | `luci-app-nut` `nut-driver-usbhid-ups` | UPS 管理（NUT，带常见 USB UPS 驱动） | ImmortalWrt luci / packages |
-| 存储 / 服务 | `luci-app-vlmcsd` | KMS 激活服务器 | ImmortalWrt luci |
-| 代理 | `luci-app-daed` | daed（eBPF 透明代理，带网页面板） | ImmortalWrt luci |
-| 家长控制 | `luci-app-appfilter` | 应用过滤（OpenAppFilter） | ImmortalWrt luci |
-| 家长控制 | `luci-app-timecontrol` | 定时控制（按设备 MAC 和时段断网） | gaobin89/luci-app-timecontrol |
-| 通知 / 高可用 | `luci-app-wechatpush` | 微信推送（设备上下线、IP 变化等通知） | ImmortalWrt luci |
-| 通知 / 高可用 | `luci-app-keepalived` | Keepalived（VRRP 主备高可用） | ImmortalWrt luci |
-| 组网 / VPN | `luci-app-n2n` | N2N（P2P 虚拟局域网） | ImmortalWrt luci |
-| 组网 / VPN | `luci-app-softethervpn` | SoftEther VPN 服务器 | ImmortalWrt luci |
-| 组网 / VPN | `luci-app-3cat` `socat` | 端口转发（替代 luci-app-socat）+ socat 命令行 | ImmortalWrt luci / packages |
-| 同步 / 下载 | `luci-app-syncthing` | Syncthing 文件同步 | ImmortalWrt luci |
-| 同步 / 下载 | `luci-app-transmission` | Transmission BT 下载 | ImmortalWrt luci |
-| 同步 / 下载 | `luci-app-dufs` | Dufs 文件服务器（WebDAV） | ImmortalWrt luci |
-| 娱乐 | `luci-app-unblockneteasemusic` | 解锁网易云音乐灰色歌曲 | ImmortalWrt luci |
-| 代理 | `luci-app-v2raya` | v2rayA（xray 网页客户端） | ImmortalWrt luci |
-| 代理 | `luci-app-nikki` `mihomo-meta` | Nikki（mihomo 透明代理） | nikkinikki-org/OpenWrt-nikki |
-| 广告过滤 / 防检测 | `luci-app-adblock-fast` | 广告过滤（基于 dnsmasq） | ImmortalWrt luci |
-| 广告过滤 / 防检测 | `luci-app-ua2f` | UA2F（改写 UA，校园网防检测） | ImmortalWrt luci |
-| 组网 / VPN | `luci-app-nps` | NPS 内网穿透客户端（npc） | ImmortalWrt luci |
-| 流量统计 | `luci-app-vnstat2` | vnStat 流量统计（按接口、按月） | ImmortalWrt luci |
-| 存储 / 服务 | `luci-app-cifs-mount` | 挂载远程 SMB/CIFS 共享 | ImmortalWrt luci |
-| 蜂窝网络 | `luci-proto-modemmanager` + USB 模块驱动 | 4G/5G 模块拨号（ModemManager，QMI / MBIM / NCM / 串口） | ImmortalWrt luci / packages |
-| 内核 | `KERNEL_PSI` `KERNEL_TASKSTATS` | 资源压力统计 / 按进程 IO 统计（iotop 要用） | 内核选项 |
-| 内核 | `KERNEL_DETECT_HUNG_TASK` `KERNEL_SOFTLOCKUP_DETECTOR` | 卡死任务 / 软死锁检测 | 内核选项 |
-| 内核 | `KERNEL_CGROUP_NET_CLASSID` | cgroup 流量标记（net_cls） | 内核选项 |
-| 内核 | `KERNEL_ZRAM_BACKEND_ZSTD` `KERNEL_ZRAM_DEF_COMP_ZSTD` | zram 支持 zstd 并设为默认（保留 lzo） | 内核选项 |
-| 流量控制 | `kmod-sched` `kmod-sched-ctinfo` `kmod-sched-connmark` `kmod-sched-flower` `kmod-sched-act-vlan` `kmod-sched-drr` `kmod-sched-prio` `kmod-sched-mqprio` `kmod-netem` | 更多 tc 队列 / 分类器 / 动作，netem 网络损伤模拟 | ImmortalWrt 主仓库 |
-| 流量控制 | `tc-full` | 完整版 tc 命令 | ImmortalWrt 主仓库 |
-| 内核 | `kmod-bonding` `proto-bonding` | 多网口聚合（在「网络 → 接口」里建 Bonding 接口） | ImmortalWrt 主仓库 |
-| 内核 | `kmod-nf-nathelper` `kmod-nf-nathelper-extra` | FTP / SIP / PPTP / H.323 等 NAT 辅助 | ImmortalWrt 主仓库 |
-| 内核 | `kmod-gre` `kmod-ip6-tunnel` `kmod-l2tp` `kmod-ipvlan` `kmod-vrf` | GRE / IPv6 隧道 / L2TP / ipvlan / VRF | ImmortalWrt 主仓库 |
-| 内核 | `kmod-nft-bridge` `kmod-nft-netdev` `kmod-nft-arp` | nftables 桥接 / netdev / ARP 扩展 | ImmortalWrt 主仓库 |
-| 内核 | `kmod-tls` | 内核 TLS | ImmortalWrt 主仓库 |
-| 存储驱动 | `kmod-loop` `kmod-nbd` `kmod-fs-autofs4` | 回环设备 / 网络块设备 / autofs | ImmortalWrt 主仓库 |
-| 蜂窝网络 | `kmod-mhi-net` `kmod-mhi-wwan-ctrl` `kmod-mtk-t7xx`（含 `kmod-wwan`） | PCIe 5G 模块（高通 MHI、联发科 T700） | ImmortalWrt 主仓库 |
-| 蜂窝网络 | `luci-app-3ginfo-lite` `luci-app-modemband` `luci-app-sms-tool-js` | 信号信息 / 锁频段 / 短信 | ImmortalWrt luci |
-| 调试工具 | `strace` `gdb` `perf` `lsof` `iotop` `sysstat` `btop` | 系统调用跟踪 / 调试器 / 性能分析 / 打开文件 / IO 监控 / sar 等 / 资源监控 | ImmortalWrt 主仓库 / packages |
-| 系统工具 | `tmux` `screen` `vim-full` `zsh` `less` `tree` `file` | 终端复用 / 编辑器 / Shell / 常用小工具 | ImmortalWrt packages |
-| 系统工具 | `procps-ng-*`（ps、top、free、vmstat、watch、pgrep、pkill、pmap、pwdx、slabtop、uptime、w） | 完整版进程工具（替换 busybox 同名命令） | ImmortalWrt packages |
-| 系统工具 | `git` `git-http` `rsync` `rsyncd` | Git / rsync 及 rsync 服务端 | ImmortalWrt packages |
-| 系统工具 | `nvme-cli` `dmidecode` `acpid` `kexec-tools` `f2fs-tools` `xfs-mkfs` | NVMe 管理 / 硬件信息 / ACPI 电源键 / kexec / F2FS、XFS 格式化 | ImmortalWrt 主仓库 / packages |
-| 网络工具 | `nmap` `ncat` `arp-scan` `drill` | 端口扫描 / netcat / 局域网扫描 / DNS 查询 | ImmortalWrt packages |
-| 网络工具 | `conntrackd` `ipvsadm` | 连接跟踪同步（默认关闭）/ IPVS 负载均衡 | ImmortalWrt packages |
-| 系统 | `luci-app-irqbalance` | 中断均衡界面 | ImmortalWrt luci |
-| 时间同步 | `chrony` `luci-app-chrony` | Chrony 时间同步（替代 busybox sysntpd） | ImmortalWrt packages / luci |
-| 系统 | `luci-app-cpulimit` `luci-app-ramfree` | 进程 CPU 限制 / 释放内存 | ImmortalWrt luci |
-| DDNS / 穿透 | `luci-app-ddns` | 动态域名（官方 ddns-scripts） | ImmortalWrt luci |
-| DDNS / 穿透 | `luci-app-frps` | FRP 服务端 | ImmortalWrt luci |
-| DNS | `luci-app-https-dns-proxy` | DoH 代理（默认关闭） | ImmortalWrt luci |
-| DNS | `luci-app-unbound` | Unbound 递归 DNS（默认关闭，端口 5334） | ImmortalWrt luci |
-| 流量控制 | `luci-app-qosify` | qosify（eBPF DSCP 标记 + cake） | ImmortalWrt luci |
-| 流量控制 | `luci-app-syncdial` | 多线多拨（依赖 mwan3 + macvlan，界面自带中文） | ImmortalWrt luci |
-| 网络工具 | `luci-app-arpbind` | IP / MAC 绑定 | ImmortalWrt luci |
-| 代理 | `luci-app-gost` `luci-app-microsocks` | GOST 隧道 / 轻量 SOCKS5 服务端 | ImmortalWrt luci |
-| IPTV | `luci-app-rtp2httpd` | IPTV 组播 / RTSP 转 HTTP | ImmortalWrt luci |
-| 物联网 | `luci-app-mosquitto` | MQTT 服务器 | ImmortalWrt luci |
-| 安全 | `luci-app-crowdsec-firewall-bouncer` | CrowdSec 防火墙封禁端（只有 bouncer，不含引擎） | ImmortalWrt luci |
-| 监控 | `luci-app-snmpd` `luci-app-lldpd` | SNMP（默认关闭）/ LLDP 邻居发现 | ImmortalWrt luci |
+| DNS | `luci-i18n-adguardhome-zh-cn` | AdGuard Home · 简体中文 | ImmortalWrt luci |
+| DNS | `luci-i18n-mosdns-zh-cn` | MosDNS 分流 DNS · 简体中文 | sbwml/luci-app-mosdns |
+| DNS | `luci-i18n-smartdns-zh-cn` | SmartDNS · 简体中文 | ImmortalWrt luci |
+| Docker | `docker` | Docker 客户端 | ImmortalWrt packages |
+| Docker | `docker-compose` | Docker Compose | ImmortalWrt packages |
+| Docker | `dockerd` | Docker 守护进程 | ImmortalWrt packages |
+| Docker | `luci-app-dockerman` | Docker 管理 | ImmortalWrt luci |
+| Docker | `luci-i18n-dockerman-zh-cn` | Docker 管理 · 简体中文 | ImmortalWrt luci |
+| 共享 / 文件 | `filebrowser` | Filebrowser 网页文件管理 | ImmortalWrt packages |
+| 共享 / 文件 | `luci-app-cifs-mount` | 挂载远程 SMB/CIFS | ImmortalWrt luci |
+| 共享 / 文件 | `luci-app-filebrowser` | 文件浏览器 | ImmortalWrt luci |
+| 共享 / 文件 | `luci-app-rclone` | Rclone | ImmortalWrt luci |
+| 共享 / 文件 | `luci-app-samba4` | Samba4 网络共享 | ImmortalWrt luci |
+| 共享 / 文件 | `luci-app-syncthing` | Syncthing | ImmortalWrt luci |
+| 共享 / 文件 | `luci-i18n-cifs-mount-zh-cn` | 挂载远程 SMB/CIFS · 简体中文 | ImmortalWrt luci |
+| 共享 / 文件 | `luci-i18n-filebrowser-zh-cn` | 文件浏览器 · 简体中文 | ImmortalWrt luci |
+| 共享 / 文件 | `luci-i18n-rclone-zh-cn` | Rclone · 简体中文 | ImmortalWrt luci |
+| 共享 / 文件 | `luci-i18n-samba4-zh-cn` | Samba4 网络共享 · 简体中文 | ImmortalWrt luci |
+| 共享 / 文件 | `luci-i18n-syncthing-zh-cn` | Syncthing · 简体中文 | ImmortalWrt luci |
+| 共享 / 文件 | `samba4-server` | Samba 4 服务端 | ImmortalWrt packages |
+| 核显 / CPU | `i915-firmware-dmc` | Intel 核显 DMC 固件 | ImmortalWrt 主仓库 |
+| 核显 / CPU | `i915-firmware-guc` | Intel 核显 GuC 固件 | ImmortalWrt 主仓库 |
+| 核显 / CPU | `i915-firmware-huc` | Intel 核显 HuC 固件 | ImmortalWrt 主仓库 |
+| 核显 / CPU | `intel-microcode` | Intel CPU 微码 | ImmortalWrt 主仓库 |
+| 核显 / CPU | `kmod-drm-i915` | 内核模块：Intel 核显 DRM 驱动 | ImmortalWrt 主仓库 |
+| 核显 / CPU | `kmod-hwmon-coretemp` | 内核模块：Intel CPU 温度传感器 | ImmortalWrt 主仓库 |
+| 核显 / CPU | `kmod-i2c-i801` | 内核模块：Intel SMBus（i801）驱动 | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-bonding` | 内核模块：网卡绑定（bonding） | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-gre` | 内核模块：GRE 隧道 | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-ip6-tunnel` | 内核模块：IPv6 隧道 | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-ipvlan` | 内核模块：IPVLAN 虚拟网卡 | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-l2tp` | 内核模块：L2TP 隧道 | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-macvlan` | 内核模块：MACVLAN 虚拟网卡 | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-nf-nathelper` | 内核模块：NAT 协议助手（FTP 等） | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-nf-nathelper-extra` | 内核模块：NAT 协议助手（扩展：SIP/PPTP 等） | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-nft-arp` | 内核模块：nftables ARP 过滤 | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-nft-bridge` | 内核模块：nftables 网桥过滤 | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-nft-netdev` | 内核模块：nftables netdev 过滤 | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-tls` | 内核模块：内核 TLS 加速 | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-veth` | 内核模块：veth 虚拟网卡对 | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-vrf` | 内核模块：VRF 虚拟路由转发 | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `kmod-vxlan` | 内核模块：VXLAN 隧道 | ImmortalWrt 主仓库 |
+| 内核 / 隧道 | `proto-bonding` | Bonding 接口协议 | ImmortalWrt 主仓库 |
+| 网卡 / USB 网卡 | `kmod-e1000e` | 内核模块：Intel 千兆网卡驱动 e1000e | ImmortalWrt 主仓库 |
+| 网卡 / USB 网卡 | `kmod-igb` | 内核模块：Intel 千兆网卡驱动 igb | ImmortalWrt 主仓库 |
+| 网卡 / USB 网卡 | `kmod-igc` | 内核模块：Intel 2.5G 网卡驱动 igc（I225/I226） | ImmortalWrt 主仓库 |
+| 网卡 / USB 网卡 | `kmod-r8125` | 内核模块：Realtek 2.5G 网卡驱动 r8125 | ImmortalWrt 主仓库 |
+| 网卡 / USB 网卡 | `kmod-r8168` | 内核模块：Realtek 千兆网卡驱动 r8168 | ImmortalWrt 主仓库 |
+| 网卡 / USB 网卡 | `kmod-usb-net-asix-ax88179` | 内核模块：ASIX AX88179 USB 千兆网卡 | ImmortalWrt 主仓库 |
+| 网卡 / USB 网卡 | `kmod-usb-net-cdc-ether` | 内核模块：USB CDC 以太网 | ImmortalWrt 主仓库 |
+| 网卡 / USB 网卡 | `kmod-usb-net-cdc-ncm` | 内核模块：USB CDC NCM 网卡 | ImmortalWrt 主仓库 |
+| 网卡 / USB 网卡 | `kmod-usb-net-ipheth` | 内核模块：iPhone USB 共享网络 | ImmortalWrt 主仓库 |
+| 网卡 / USB 网卡 | `kmod-usb-net-rndis` | 内核模块：RNDIS USB 共享网络（安卓） | ImmortalWrt 主仓库 |
+| 网卡 / USB 网卡 | `kmod-usb-net-rtl8152` | 内核模块：Realtek RTL8152/8153 USB 网卡 | ImmortalWrt 主仓库 |
+| 网卡 / USB 网卡 | `usbmuxd` | iPhone USB 连接 | ImmortalWrt packages |
+| 流量 / QoS | `kmod-netem` | 内核模块：网络损伤模拟（延迟/丢包） | ImmortalWrt 主仓库 |
+| 流量 / QoS | `kmod-sched` | 内核模块：流量调度器（扩展） | ImmortalWrt 主仓库 |
+| 流量 / QoS | `kmod-sched-act-vlan` | 内核模块：tc VLAN 动作 | ImmortalWrt 主仓库 |
+| 流量 / QoS | `kmod-sched-bpf` | 内核模块：tc BPF 分类器 | ImmortalWrt 主仓库 |
+| 流量 / QoS | `kmod-sched-connmark` | 内核模块：tc connmark 动作 | ImmortalWrt 主仓库 |
+| 流量 / QoS | `kmod-sched-ctinfo` | 内核模块：tc ctinfo 动作（DSCP 还原） | ImmortalWrt 主仓库 |
+| 流量 / QoS | `kmod-sched-drr` | 内核模块：DRR 队列调度 | ImmortalWrt 主仓库 |
+| 流量 / QoS | `kmod-sched-flower` | 内核模块：tc flower 分类器 | ImmortalWrt 主仓库 |
+| 流量 / QoS | `kmod-sched-mqprio` | 内核模块：多队列优先级调度 mqprio | ImmortalWrt 主仓库 |
+| 流量 / QoS | `kmod-sched-prio` | 内核模块：PRIO 优先级队列 | ImmortalWrt 主仓库 |
+| 流量 / QoS | `kmod-tcp-bbr` | 内核模块：TCP BBR 拥塞控制 | ImmortalWrt 主仓库 |
+| 流量 / QoS | `luci-app-appfilter` | 应用过滤（OAF） | ImmortalWrt luci |
+| 流量 / QoS | `luci-app-banip` | IP 黑名单 | ImmortalWrt luci |
+| 流量 / QoS | `luci-app-mwan3` | 多线负载均衡 | ImmortalWrt luci |
+| 流量 / QoS | `luci-app-pbr` | 策略路由 | ImmortalWrt luci |
+| 流量 / QoS | `luci-app-sqm` | SQM 智能队列 | ImmortalWrt luci |
+| 流量 / QoS | `luci-app-syncdial` | 多线多拨 | ImmortalWrt luci |
+| 流量 / QoS | `luci-app-timecontrol` | 定时上网控制 | gaobin89/luci-app-timecontrol |
+| 流量 / QoS | `luci-i18n-appfilter-zh-cn` | 应用过滤（OAF） · 简体中文 | ImmortalWrt luci |
+| 流量 / QoS | `luci-i18n-banip-zh-cn` | IP 黑名单 · 简体中文 | ImmortalWrt luci |
+| 流量 / QoS | `luci-i18n-mwan3-zh-cn` | 多线负载均衡 · 简体中文 | ImmortalWrt luci |
+| 流量 / QoS | `luci-i18n-pbr-zh-cn` | 策略路由 · 简体中文 | ImmortalWrt luci |
+| 流量 / QoS | `luci-i18n-sqm-zh-cn` | SQM 智能队列 · 简体中文 | ImmortalWrt luci |
+| 流量 / QoS | `tc-full` | 完整 tc 命令 | ImmortalWrt packages |
+| 代理 | `kmod-nft-socket` | 内核模块：nftables socket 匹配 | ImmortalWrt 主仓库 |
+| 代理 | `kmod-nft-tproxy` | 内核模块：nftables 透明代理 TPROXY | ImmortalWrt 主仓库 |
+| 代理 | `kmod-tun` | 内核模块：TUN/TAP 虚拟网卡 | ImmortalWrt 主仓库 |
+| 代理 | `luci-app-nikki` | Nikki（mihomo 透明代理） | nikkinikki-org/OpenWrt-nikki |
+| 代理 | `luci-app-openclash` | OpenClash | ImmortalWrt luci |
+| 代理 | `luci-app-passwall` | PassWall | ImmortalWrt luci |
+| 代理 | `luci-i18n-nikki-zh-cn` | Nikki（mihomo 透明代理） · 简体中文 | nikkinikki-org/OpenWrt-nikki |
+| 代理 | `luci-i18n-passwall-zh-cn` | PassWall · 简体中文 | ImmortalWrt luci |
+| 代理 | `mihomo-meta` | Mihomo Meta 内核（Nikki） | nikkinikki-org/OpenWrt-nikki |
+| DDNS / 证书 / 穿透 | `luci-app-acme` | ACME 证书 | ImmortalWrt luci |
+| DDNS / 证书 / 穿透 | `luci-app-ddns` | 动态域名 | ImmortalWrt luci |
+| DDNS / 证书 / 穿透 | `luci-app-lucky` | Lucky（DDNS/转发/穿透） | gdy666/luci-app-lucky |
+| DDNS / 证书 / 穿透 | `luci-i18n-acme-zh-cn` | ACME 证书 · 简体中文 | ImmortalWrt luci |
+| DDNS / 证书 / 穿透 | `luci-i18n-ddns-zh-cn` | 动态域名 · 简体中文 | ImmortalWrt luci |
+| DDNS / 证书 / 穿透 | `luci-i18n-lucky-zh-cn` | Lucky（DDNS/转发/穿透） · 简体中文 | gdy666/luci-app-lucky |
+| 组网 | `luci-app-natmap` | NATMap 端口映射 | ImmortalWrt luci |
+| 组网 | `luci-app-tailscale` | Tailscale 组网 | asvow/luci-app-tailscale |
+| 组网 | `luci-i18n-natmap-zh-cn` | NATMap 端口映射 · 简体中文 | ImmortalWrt luci |
+| 组网 | `luci-i18n-tailscale-zh-cn` | Tailscale 组网 · 简体中文 | asvow/luci-app-tailscale |
+| 组网 | `luci-proto-wireguard` | WireGuard 接口协议 | ImmortalWrt luci |
+| 组网 | `qrencode` | 二维码生成（WireGuard） | ImmortalWrt packages |
+| 组网 | `wireguard-tools` | WireGuard 工具 | ImmortalWrt packages |
+| 外设 | `luci-app-p910nd` | 网络打印 | ImmortalWrt luci |
+| 外设 | `luci-i18n-p910nd-zh-cn` | 网络打印 · 简体中文 | ImmortalWrt luci |
+| 下载 | `luci-app-qbittorrent` | qBittorrent | ImmortalWrt luci |
+| 下载 | `luci-i18n-qbittorrent-zh-cn` | qBittorrent · 简体中文 | ImmortalWrt luci |
 
-带中文翻译的插件都同时选了对应的 `luci-i18n-*-zh-cn`。注意配置里必须有 `CONFIG_LUCI_LANG_zh_Hans=y`，否则 `make defconfig` 会把所有中文包悄悄去掉。workflow 在 `make defconfig` 之后会检查配置里写成 `=y` 的项是否都还在，x86_64 缺了任何一项会直接报错。
+## 雅典娜 / 亚瑟（各 90）
 
-说明：
+两台显式包清单相同（下列任一配置）。NSS / Wi-Fi 等由 target `DEFAULT_PACKAGES` 自动带入，不在此列。
 
-- **SMB 改用 Samba 4（三台都是）**：samba4 兼容性最好（权限、macOS 时间机器、Windows 网络发现 wsdd2 都有）。ksmbd 和它都要占 445 端口，所以配置里显式写了 `# CONFIG_PACKAGE_ksmbd-server is not set` / `# CONFIG_PACKAGE_luci-app-ksmbd is not set`，不会被带回来；没有其他包依赖 ksmbd。共享设置在「服务 → 网络共享」，SMB 用户密码用 `smbpasswd -a root` 添加。代价是比 ksmbd 大：闪存多约 30–40 MB（未压缩，`samba4-libs` 占大头），smbd 运行时约 30–60 MB 内存。
-- **核显**：编进了 i915 驱动和固件，Docker 里的 Jellyfin 等容器可以把 `/dev/dri` 映射进去做硬件转码（容器自带 VAAPI 驱动）。OpenWrt 本身没有 Intel VAAPI 用户态驱动，宿主机上的 `ffmpeg` 只能软解。
-- **代理插件**：OpenClash、PassWall、HomeProxy、daed、v2rayA、Nikki 都装了，但同一时间只开一个，否则透明代理规则会互相打架。
-- **daed**：要求内核带 BTF，所以 x86_64 打开了 `CONFIG_KERNEL_DEBUG_INFO_BTF`（连带完整内核调试信息），eBPF 程序用 workflow 已装的宿主机 clang/llvm 编译（`CONFIG_BPF_TOOLCHAIN_HOST`，内核 6.18 要求 clang ≥ 15，所以编译机用 ubuntu-24.04 的 clang 18）。代价：内核编译更慢、占用编译机更多磁盘，内核镜像大几 MB（内核分区 32 MB，够用）。daed 和 OpenClash / PassWall / HomeProxy 一样，同一时间只开一个。
-- **应用过滤（OAF）**：ImmortalWrt 默认开着软件 / 硬件流量卸载（`flow_offloading`），OAF 要关掉才能识别应用，插件页面里有一键关闭的按钮；做旁路由时，只有网关指向本机的设备才会被过滤。定时控制同理，只管经过本机的设备。
-- **BT 下载**：qBittorrent 网页 8080、Transmission 网页 9091，网页端口不冲突；Transmission 监听 51413，qBittorrent 的监听端口在它自己的设置里改成别的就行，两个同时开注意下载目录分开。
-- **其他默认端口**：Syncthing 8384、Dufs 5000（UPnP 自带的 HTTP 端口原来也是 5000，首次开机改成 5100）、Prometheus node exporter 9100（p910nd 打印服务默认也是 9100，首次开机把它改成 9101）。
-- **Prometheus / Grafana**：
-  - node exporter：首次开机脚本 `files/common/etc/uci-defaults/96-prometheus-node-exporter`（三台共用）把监听接口从默认的 `loopback` 改成 `lan`、端口 9100，并设为开机自启（只在仍是 `loopback` 时改，之后你改过的不会被覆盖）。抓取地址 `http://路由器LAN地址:9100/metrics`。选的是 lua 版：ImmortalWrt master 里它更新更勤、采集器更全（hwmon、thermal、mwan3、textfile、filesystem、ethtool 都只有 lua 版有）；ucode 版也占 9100，没装。
-  - `textfile` 采集器会读 `/var/prometheus/*.prom`，自己的脚本往里写指标就能一起抓走。
-  - Netdata 也自带 Prometheus 格式输出：`http://路由器LAN地址:19999/api/v1/allmetrics?format=prometheus`（Netdata 默认只允许内网地址访问），两个选一个抓就行，别重复存。
-  - Grafana 面板：node exporter 用社区的 “Node Exporter Full”（ID 1860），OpenWrt 专用指标（Wi‑Fi、DHCP 主机、NAT 连接）可以搜 “OpenWrt” 面板（例如 ID 11147，或更新的 18153）。
-  - clash-exporter：只编进 x86_64。开机自启，监听 `0.0.0.0:2112`（防火墙挡住 WAN），抓取地址 `http://路由器LAN地址:2112/metrics`。默认从 OpenClash 的 `cn_port` / `dashboard_password` 连 `127.0.0.1`。按目的地拆流量默认关闭，要开就 `uci set clash-exporter.main.collect_dest='1'`。Grafana 用原来的 Clash dashboard（ID 18530）。雅典娜和亚瑟已装 OpenClash，但 `clash-exporter` 仍只编进 x86_64（由 `scripts/x86_64-extra-packages.sh` 拉取），JD 机型未加。另有 `clash_up`（连得上 OpenClash 内核为 1，否则为 0），可以拿来做告警；内核断开时连接数、内存、模式这些指标会清空，不会一直停在旧值。源码固定在 `scripts/x86_64-extra-packages.sh` 里的 `CLASH_EXPORTER_COMMIT`，升级时改这个 SHA。
-- **sing-box**（HomeProxy、PassWall 用）：x86_64 编的是完整版，但去掉了 NaiveProxy 出站（`scripts/x86_64-extra-packages.sh` 把 `SING_BOX_BUILD_NAIVE_OUTBOUND` 改成默认关）。这个功能要把整套 Chromium 网络栈（`libcronet`）编进来，而 `libcronet` 先要编 `gn`，`gn` 现在要求 C++23，当时 ubuntu-22.04 上的 clang 14 编不过，会让整个编译失败。现在编译机换成 ubuntu-24.04（clang 18），`gn` 应该能编了，但 `libcronet` 是整套 Chromium 网络栈，要多编很久、固件也会大不少，所以仍然关着。代价只是 sing-box 不能当 NaiveProxy 客户端；QUIC、uTLS、WireGuard、Tailscale、gVisor 等其他功能都在。
-- **网易云解锁**：依赖 Node.js，编译时要从源码交叉编译 node，整体编译时间会明显变长，固件也会大几十 MB；它的核心程序首次启动时在线下载。
-- **防火墙**：用的是 firewall4（nftables），没有装旧的 firewall（iptables）。Docker、mwan3、strongSwan 依赖 `iptables` 命令，装进来的是走 nftables 的兼容版 `iptables-nft` / `ip6tables-nft`，没有 legacy 版。ImmortalWrt 默认打开 FullCone NAT（`kmod-nft-fullcone`，IPv4 开、IPv6 关）和软件 / 硬件流量卸载（x86 网卡一般不支持硬件卸载，实际只有软件卸载生效）。
-- **广告过滤**：adblock-fast 和 AdGuard Home 选一个用就行。
-- **Unbound**：默认要监听 53 端口，和 dnsmasq 冲突。首次开机脚本 `97-x86-service-defaults` 把它改到 **5334** 端口并关闭（MosDNS 默认占 5335，所以不用 5335）；要用就在 LuCI 里打开，再把 dnsmasq（或 MosDNS / AdGuard Home）的上游指向 `127.0.0.1#5334`。
-- **https-dns-proxy**：默认会强制劫持局域网 53 端口并改写 dnsmasq 上游，和 MosDNS / AdGuard Home 打架，所以默认关闭。
-- **CrowdSec**：只装了防火墙封禁端（`crowdsec-firewall-bouncer`），没有 CrowdSec 引擎（太大）。要用得在别的机器（例如 Docker）跑 CrowdSec，再把它的本地 API 地址和 bouncer key 填到插件里；没配之前保持关闭即可。
-- **多拨（syncdial）**：会带上 mwan3 和 macvlan，和 `luci-app-mwan3` 共用 mwan3，规则别重复配。
-- **tc**：选了 `tc-full`，SQM 等依赖的 `tc` 由它提供，`tc-tiny` 自动不再编入。
-- **perf / gdb / BTF**：perf 跟内核一起编译，gdb 体积较大；都只是排障工具，不影响日常运行。
-- **UA2F**：靠 nfqueue 改包，开着流量卸载时已建立的连接会绕过它，用之前把流量卸载关掉。
-- **4G/5G 模块**：在「网络 → 接口」新建 ModemManager 协议的接口即可。`uqmi` / `umbim` 只是命令行调试工具。
-- **DNS 插件**：AdGuard Home、MosDNS、SmartDNS 都装了，用哪个就让哪个接上游，注意别抢同一个端口（dnsmasq 占 53）。
-- **冲突检查（x86）**：编译层面没有冲突——选中的包之间没有 CONFLICTS / PROVIDES 撞车，`busybox` 和 `coreutils-*` / `procps-ng-*` / `vim-full` 走 apk 的 alternatives，不会有同路径文件；`dnsmasq-full`、`ip-full`、`tc-full`、`iptables-nft`、`libustream-openssl` 都是唯一的变体。运行时要注意：
-  - DNS：dnsmasq 占 53；AdGuard Home、MosDNS（5335）、SmartDNS、Unbound（5334）、https-dns-proxy 默认都关，开一个当 dnsmasq 上游，别让两个都去抢 53 / 改 dnsmasq。
-  - 代理：OpenClash、PassWall、HomeProxy、Nikki、daed、v2rayA 默认都关，同一时间只开一个（OpenClash 和 Nikki 面板都用 9090）。
-  - QoS：SQM、qosify、eQoS 默认都关，只开一个；开 SQM / qosify / OAF / UA2F 时把流量卸载关掉。
-  - 分流：mwan3（多拨也靠它）和 PBR 都做策略路由，别同时配规则。
-  - DDNS：DDNS（ddns-scripts）、DDNS-GO、Lucky 同一个域名只交给一个更新。
-  - 端口映射：UPnP 和 NATMap 默认都关，可以共存。
-  - Lucky 默认开着（网页 16601），只是网页端，不自动做 DDNS / 转发。
-- **默认行为变化**：
-  - BBR：`kmod-tcp-bbr` 自带 `/etc/sysctl.d/12-tcp-bbr.conf`，本机发起的 TCP 默认用 BBR（下载、Docker、qBittorrent 等），转发流量不受影响；默认队列 `fq_codel` 没改成 `fq`，所以不会和 SQM（它自己在接口上设 cake/fq_codel）冲突。
-  - irqbalance：包里默认关闭，首次开机脚本 `files/x86_64/etc/uci-defaults/98-enable-irqbalance` 会打开。
-  - zram-swap：默认开启，大小是内存的一半；压缩算法由首次开机脚本 `97-zram-zstd` 设成 **zstd**（内核默认算法也改成了 zstd，保留 lzo 兜底；已经手动设过的不动）。可用 `uci set system.@system[0].zram_size_mb=大小` 调整，不想要就 `/etc/init.d/zram disable`。
-  - 时间同步：**chrony 接管**。三台共用的首次开机脚本 `files/common/etc/uci-defaults/99-zz-chrony-ntp`（没装 chrony 的固件自动跳过）会：把 chrony 服务器换成 `ntp.tencent.com`、`ntp1.aliyun.com`、`ntp.ntsc.ac.cn`、`cn.ntp.org.cn` + `cn.pool.ntp.org`（只在第一次写入，之后升级不会覆盖你改过的服务器）；把「系统 → 时间同步」里的 busybox NTP 客户端和服务端都关掉并禁用 `sysntpd`；启用 `chronyd`。选这种做法是因为它最稳：不删 busybox 的 ntpd，LuCI 系统页面照常能用，想换回来只要在那里重新勾选并关掉 chronyd。chrony 默认还会给 LAN 提供 NTP 服务（`allow` lan）。
-  - 默认关闭的服务（`97-x86-service-defaults`，每次刷新固件后首次开机都会执行，因为升级不保留服务的自启状态）：unbound（同时改到 5334 端口）、https-dns-proxy、conntrackd（没有主备同步配置时没用）、snmpd（默认团体名是 public，改了再开）、haproxy 独立服务（示例配置占 8080，和 qBittorrent 冲突；PassWall 自己拉起 HAProxy，不受影响）、frps / frpc（没有启用开关，装上就跑，frpc 默认连本机 frps；配好后去「系统 → 启动项」启用）、softethervpnserver / bridge / client（装上就跑，占 443 / 992 / 1194 / 5555；SoftEther 统一用 LuCI 的 SoftEther VPN 页面开关）。
-  - UPnP：装了但默认关闭，要用去「服务 → UPnP」里开。
-- **没装的**：`luci-app-cpufreq`（它依赖的 `cpufreq` 只支持 ARM，x86 由内核 intel_pstate 自动调频）；`kmod-8021q` 不存在，802.1Q VLAN 已经编进内核；`coreutils-full` 不存在，改成按命令选的 `coreutils-*`；`luci-app-cupsd` 在 ImmortalWrt 里不存在，打印只用 p910nd；KVM / qemu-ga、iStore、Intel 无线网卡驱动按要求不装；`luci-app-rustdesk-server`、`luci-app-ocserv`、`luci-app-pppoe-server`、`luci-app-dae`、`luci-app-lxc`、`kmod-crypto-hw-ccp` 按要求不装；`luci-app-syncdial` 没有单独的中文包；**AirPlay 2（`luci-app-airplay2` / `shairport-sync`）已移除**：ImmortalWrt 的 shairport-sync 4.3.6 用了新版 FFmpeg 已删掉的 `AVCodec.sample_fmts`，和 FFmpeg 9 编译不过（它带进来的 `audio-support` / `alsa-lib` / `kmod-sound-core` 也一起去掉了，没有别的包用到）。
-- **定时控制**：ImmortalWrt feeds 里没有，用的是 gaobin89 的 JS 版（自动适配 fw4 / nftables），中文翻译直接打包在插件里，没有单独的 `luci-i18n-timecontrol-zh-cn`。
-- **Lucky、EasyTier**：这两个包下载的都是作者 / 官方 GitHub Release 的预编译二进制（不是源码编译）。
-- **首次开机后要自己配置的**：OpenClash 内核和订阅、PassWall 节点、AdGuard Home 初始化、MosDNS 规则、Tailscale 登录、ZeroTier 网络 ID、WireGuard 接口、DDNS-GO / Lucky / frpc、ACME 证书、OpenList 存储、EasyTier / Cloudflare Tunnel、VPN 服务端、SmartDNS、NUT、daed、微信推送、Keepalived、N2N、SoftEther、Syncthing、Transmission、Dufs、v2rayA / Nikki 订阅、NPS 客户端、CIFS 挂载、蜂窝接口、Samba 共享和 SMB 密码、FRP 服务端、DDNS、Unbound / https-dns-proxy（要用时）、CrowdSec 本地 API、MQTT、GOST / microsocks、rtp2httpd。OpenClash、AdGuard Home 等运行时下载的内核和规则都放在根分区，4 GB 足够。
-
-## 固件内容清单（按层级）
-
-根据 `configs/*.config` 和 `make defconfig` 的结果整理。只列配置里**显式选中**的项；依赖自动带进来的包（例如 `samba4-libs`、`mwan3`、`kmod-wwan` 的下级依赖）不单独列。带中文翻译的插件都同时装了对应的 `luci-i18n-*-zh-cn`（x86 共 89 个中文包）。
-
-### x86_64（ImmortalWrt master）
-
-| 层级 | 包名 / 选项 → 中文名 |
-|---|---|
-| 内核选项 | `TARGET_ROOTFS_PARTSIZE=4096` 根分区 4 GB；`GRUB_EFI_IMAGES` EFI 启动镜像；`DEVEL` 高级编译选项；`CCACHE` 编译缓存；`KERNEL_DEBUG_INFO` + `KERNEL_DEBUG_INFO_BTF`（关闭 `DEBUG_INFO_REDUCED`）内核调试信息 / BTF（daed 要用）；`KERNEL_BPF_EVENTS` BPF 事件；`KERNEL_CGROUPS` `KERNEL_CGROUP_BPF` cgroup 及 cgroup BPF；`KERNEL_XDP_SOCKETS` XDP 套接字；`BPF_TOOLCHAIN_HOST` 用编译机 clang 编 eBPF；`KERNEL_PSI` 资源压力统计；`KERNEL_TASKSTATS`（连带 `TASK_DELAY_ACCT` `TASK_IO_ACCOUNTING` `TASK_XACCT`）按进程统计；`KERNEL_DETECT_HUNG_TASK` 卡死任务检测（子选项 `DETECT_HUNG_TASK_BLOCKER` 由 `scripts/x86_64-kernel-fixups.sh` 设为 y）；`KERNEL_SOFTLOCKUP_DETECTOR` 软死锁检测；`KERNEL_CGROUP_NET_CLASSID` cgroup 流量标记；`KERNEL_ZRAM_BACKEND_LZO` `KERNEL_ZRAM_BACKEND_ZSTD` `KERNEL_ZRAM_DEF_COMP_ZSTD` zram 压缩后端（默认 zstd） |
-| 内核模块与驱动 | `kmod-tcp-bbr` BBR 拥塞控制；`kmod-tun` TUN；`kmod-nft-tproxy` `kmod-nft-socket` 透明代理；`kmod-vxlan` VXLAN；`kmod-macvlan` macvlan；`kmod-veth` veth；`kmod-ipvlan` ipvlan；`kmod-vrf` VRF；`kmod-gre` GRE 隧道；`kmod-ip6-tunnel` IPv6 隧道；`kmod-l2tp` L2TP；`kmod-bonding` + `proto-bonding` 网口聚合；`kmod-nf-nathelper` `kmod-nf-nathelper-extra` NAT 辅助（FTP/SIP/PPTP 等）；`kmod-nft-bridge` `kmod-nft-netdev` `kmod-nft-arp` nftables 扩展；`kmod-tls` 内核 TLS；`kmod-igc` `kmod-igb` `kmod-e1000e` Intel 网卡；`kmod-r8125` `kmod-r8168` Realtek 网卡（不装 `kmod-r8169`）；`kmod-usb-net-rtl8152` `kmod-usb-net-asix-ax88179` USB 网卡；`kmod-usb-net-cdc-ether` `kmod-usb-net-cdc-ncm` `kmod-usb-net-rndis` 安卓 USB 共享网络；`kmod-usb-net-ipheth` iPhone USB 共享网络；`kmod-drm-i915` 核显驱动；`i915-firmware-dmc` `i915-firmware-guc` `i915-firmware-huc` 核显固件；`intel-microcode` CPU 微码；`kmod-hwmon-coretemp` CPU 温度；`kmod-i2c-i801` 主板 SMBus；`kmod-nvme` NVMe；`kmod-ata-ahci` SATA；`kmod-usb3` USB 3.0；`kmod-usb-storage` `kmod-usb-storage-uas` USB 存储；`kmod-fs-ext4` `kmod-fs-ntfs3` `kmod-fs-exfat` `kmod-fs-vfat` `kmod-fs-btrfs` `kmod-fs-xfs` `kmod-fs-f2fs` 文件系统；`kmod-fs-autofs4` autofs；`kmod-loop` 回环设备；`kmod-nbd` 网络块设备 |
-| 系统与工具 | `luci` LuCI；`default-settings-chn` 国内默认设置；`zram-swap` 压缩内存交换；`irqbalance` 中断均衡；`chrony` 时间同步；`htop` `btop` 资源监控；`nano` `vim-full` 编辑器；`bash` `zsh` Shell；`tmux` `screen` 终端复用；`less` `tree` `file` 常用小工具；`curl` `wget-ssl` 下载工具；`openssh-sftp-server` SFTP；`coreutils` + 33 个 `coreutils-*`（base64 cp cut date dd df du env head ls md5sum mktemp mv nohup nproc readlink realpath rm seq sha256sum sort split stat stdbuf tail tee timeout touch tr truncate uniq wc）GNU 命令；`findutils` `grep` `diffutils` GNU 查找 / 搜索 / 比较；`procps-ng` + `procps-ng-ps` `-top` `-free` `-vmstat` `-watch` `-pgrep` `-pkill` `-pmap` `-pwdx` `-slabtop` `-uptime` `-w` 完整进程工具；`strace` 系统调用跟踪；`gdb` 调试器；`perf` 性能分析；`lsof` 打开文件；`iotop` IO 监控；`sysstat` sar/iostat；`git` `git-http` Git；`rsync` `rsyncd` rsync 及服务端；`python3` `python3-pip` Python；`ffmpeg` `ffprobe` 音视频处理；`pciutils` `usbutils` lspci / lsusb；`dmidecode` 硬件信息；`lm-sensors` 温度传感器；`acpid`（+ `input-support`）ACPI 电源键；`kexec-tools` kexec |
-| 网络工具 | `ip-full` 完整 ip；`tc-full` 完整 tc；`bind-dig` `drill` DNS 查询；`conntrack` 连接跟踪；`conntrackd` 连接跟踪同步；`ipvsadm` IPVS；`iftop` `nload` 实时流量；`iperf3-ssl` 测速；`speedtest-go` 公网测速；`tcpdump` 抓包；`ethtool-full` 网卡工具；`mtr-json` 路由追踪；`nmap` 端口扫描；`ncat` netcat；`arp-scan` 局域网扫描；`socat` 端口转发命令行；`luci-app-wol` 网络唤醒；`luci-app-arpbind` IP/MAC 绑定 |
-| DNS | `dnsmasq-full`（替换 `dnsmasq`）完整 DNS/DHCP；`luci-app-adguardhome` AdGuard Home；`luci-app-mosdns` MosDNS；`luci-app-smartdns` SmartDNS；`luci-app-https-dns-proxy` DoH 代理；`luci-app-unbound` Unbound 递归 DNS；`luci-app-adblock-fast` 广告过滤 |
-| 代理 | `luci-app-openclash` OpenClash；`luci-app-passwall` PassWall；`luci-app-homeproxy` HomeProxy；`luci-app-daed` daed；`luci-app-v2raya` v2rayA；`luci-app-nikki` + `mihomo-meta` Nikki；`luci-app-gost` GOST；`luci-app-microsocks` SOCKS5 服务端；`luci-app-ua2f` UA2F；`luci-app-unblockneteasemusic` 网易云解锁 |
-| 组网与VPN | `luci-proto-wireguard` `wireguard-tools` `qrencode` WireGuard；`luci-app-tailscale` Tailscale（ZeroTier / EasyTier / n2n / OpenVPN / IPsec / SoftEther / keepalived 已移除） |
-| 远程访问 | `luci-app-ttyd` 网页终端；`luci-app-ddns` 动态域名；`luci-app-3cat` 端口转发；`luci-app-upnp` UPnP；`luci-app-acme` ACME 证书（frp / nps / cloudflared / natmap / lucky / ddns-go 已移除） |
-| 流量控制 | `luci-app-sqm` SQM；`luci-app-qosify` qosify；`luci-app-eqos` 按 IP 限速；`luci-app-mwan3` 多线负载均衡；`luci-app-syncdial` 多拨；`luci-app-pbr` 策略路由；`kmod-sched` `kmod-sched-ctinfo` `kmod-sched-connmark` `kmod-sched-flower` `kmod-sched-act-vlan` `kmod-sched-drr` `kmod-sched-prio` `kmod-sched-mqprio` tc 扩展；`kmod-sched-bpf` + `bpftool-minimal` eBPF 调度；`kmod-netem` 网络损伤模拟；`luci-app-appfilter` 应用过滤；`luci-app-timecontrol` 定时控制；`luci-app-banip` IP 封禁；`luci-app-crowdsec-firewall-bouncer` CrowdSec 封禁端 |
-| 存储与共享 | `luci-app-samba4` + `samba4-server` Samba 4 共享（`ksmbd-server` / `luci-app-ksmbd` 显式不装）；`luci-app-nfs` NFS；`luci-app-vsftpd` FTP；`luci-app-dufs` WebDAV；`luci-app-minidlna` DLNA；`luci-app-cifs-mount` 挂载远程 SMB；`luci-app-rclone` Rclone；`luci-app-openlist` OpenList；`luci-app-syncthing` Syncthing；`luci-app-filebrowser` `filebrowser` `luci-app-filemanager` 文件管理；`luci-app-diskman` 磁盘管理；`luci-app-hd-idle` 硬盘休眠；`parted` `fdisk` `lsblk` 分区；`e2fsprogs` `resize2fs` ext4 工具；`f2fs-tools` F2FS 工具；`xfs-mkfs` XFS 格式化；`ntfs-3g` NTFS（FUSE）；`block-mount` 挂载点；`losetup` 回环设备；`mdadm` 软 RAID；`lvm2` LVM；`smartmontools` 硬盘健康；`hdparm` 硬盘参数；`nvme-cli` NVMe 管理 |
-| 下载 | `luci-app-aria2` Aria2；`luci-app-qbittorrent` qBittorrent；`luci-app-transmission` Transmission |
-| 监控 | `luci-app-netdata` Netdata；`prometheus-node-exporter-lua` + 11 个采集器（nat_traffic netstat openwrt thermal hwmon uci_dhcp_host textfile snmp6 mwan3 filesystem ethtool）Prometheus 指标导出；`clash-exporter` OpenClash 流量指标（2112）；`luci-app-statistics` 统计图表；`luci-app-nlbwmon` 按设备流量；`luci-app-vnstat2` vnStat；`luci-app-snmpd` SNMP；`luci-app-lldpd` LLDP；`luci-app-watchcat` 网络看门狗；`luci-app-wechatpush` 微信推送 |
-| IPTV | `luci-app-udpxy` udpxy；`luci-app-msd_lite` msd_lite；`luci-app-omcproxy` 组播代理；`luci-app-rtp2httpd` rtp2httpd |
-| 4G5G | `luci-proto-modemmanager` + `modemmanager` 拨号；`kmod-usb-serial-option` `kmod-usb-acm` `kmod-usb-wdm` USB 串口 / 控制口；`kmod-usb-net-qmi-wwan` `kmod-usb-net-cdc-mbim` `kmod-usb-net-huawei-cdc-ncm` QMI / MBIM / 华为 NCM；`uqmi` `umbim` 命令行；`kmod-wwan` `kmod-mhi-net` `kmod-mhi-wwan-ctrl` `kmod-mtk-t7xx` PCIe 5G 模块；`luci-app-3ginfo-lite` 信号信息；`luci-app-modemband` 锁频段；`luci-app-sms-tool-js` 短信 |
-| 外设 | `usbmuxd` iPhone 连接；`luci-app-p910nd` 网络打印；`luci-app-nut` + `nut-driver-usbhid-ups` UPS；`luci-app-mosquitto` MQTT 服务器；`luci-app-vlmcsd` KMS 激活 |
-| Docker | `luci-app-dockerman` 管理界面；`dockerd` `docker` `docker-compose` Docker 本体（Docker 里的应用不集成） |
-| 界面 | `luci-theme-argon` Argon 主题；`LUCI_LANG_zh_Hans` 中文语言；`luci-app-commands` 自定义命令；`luci-app-autoreboot` 定时重启；`luci-app-irqbalance` 中断均衡；`luci-app-chrony` 时间同步；`luci-app-cpulimit` CPU 限制；`luci-app-ramfree` 释放内存（不装在线升级） |
-
-显式不装：`dnsmasq`（被 `dnsmasq-full` 替换）、`kmod-r8169`、`ksmbd-server`、`luci-app-ksmbd`、`luci-i18n-ksmbd-zh-cn`、`luci-app-airplay2`、`luci-i18n-airplay2-zh-cn`、`shairport-sync-*`、`prometheus-node-exporter-ucode`（用 lua 版）。`make defconfig` 后 x86 共 1152 个包，`tc-tiny` 自动不再选中。
-
-### 雅典娜 AX6600 / 亚瑟 AX1800 Pro（LibWrt 25.12-nss）
-
-两台配置一样，只差机型（雅典娜多一个 QCN9074 5G 射频固件 `ath11k-firmware-qcn9074`）。
-
-| 层级 | 包名 → 中文名 |
-|---|---|
-| 内核选项 | 没有改内核选项；`CCACHE=y` 写在配置里，但 LibWrt 的 `make defconfig` 会把它去掉（不影响编译结果） |
-| 内核模块与驱动 | 显式：`kmod-usb-storage` USB 存储、`kmod-fs-ext4` ext4。上游自动带入的 NSS：`kmod-qca-nss-dp` `kmod-qca-nss-drv`（含 bridge-mgr、vlan-mgr、lag-mgr、pppoe、pptp、gre、map-t、vxlanmgr、qdisc、igs、wifi-meshmgr 等子模块）`kmod-qca-nss-ecm` `kmod-qca-nss-crypto` `nss-firmware-ipq60xx`；Wi‑Fi：`kmod-ath11k`（ahb / pci）`ath11k-firmware-ipq6018`、雅典娜另有 `ath11k-firmware-qcn9074`；另外上游默认带 USB 3.0、exFAT / NTFS3 / F2FS / FAT、`kmod-nft-fullcone` |
-| 系统与工具 | 显式：`chrony` 时间同步、`block-mount` 挂载点、`dnsmasq-full`（替换精简版 `dnsmasq`，OpenClash 需要）；上游默认：`default-settings-chn` 国内默认设置、`automount` 自动挂载、`e2fsprogs`、`uboot-envtools`、`wpad-openssl`、`firewall4` |
-| 存储与共享 | `luci-app-samba4` Samba 4 网络共享（自动带 `samba4-server` `wsdd2`；`ksmbd-server` / `luci-app-ksmbd` 显式不装） |
-| 监控 | `prometheus-node-exporter-lua` Prometheus 指标导出 + 采集器 `-nat_traffic` `-netstat` `-openwrt` `-thermal` `-uci_dhcp_host` `-wifi` `-wifi_stations`（`prometheus-node-exporter-ucode` 显式不装） |
-| 界面 | `luci` + `luci-i18n-base-zh-cn` LuCI 中文；`luci-app-chrony` 时间同步（不装在线升级）；上游默认还带 `luci-app-cpufreq` 调频、`luci-app-package-manager` 软件包、`luci-theme-bootstrap` |
-| 代理 | `luci-app-openclash` OpenClash（必带；ImmortalWrt luci；自带中文；自动依赖 bash / curl / ca-bundle / ip-full / ruby / ruby-yaml / kmod-inet-diag / kmod-nft-tproxy / kmod-tun / unzip / luci-compat；内核运行时下载）。**亚瑟 512 MB 慎用** |
-| 组网与VPN | `luci-proto-wireguard` `wireguard-tools` `qrencode` WireGuard；`luci-app-tailscale` Tailscale（`scripts/jd-extra-packages.sh` 拉 asvow LuCI）。不装 keepalived / frp / nps |
-| 升级 | 不装 `luci-app-attendedsysupgrade`，刷机用离线 `sysupgrade` / factory |
-| 其余层级 | 下载、IPTV、4G5G、Docker、clash-exporter：未额外加。运行时不要同时开组网透明代理与 OpenClash |
-
-`make defconfig` 后包数量会因 OpenClash 及其依赖（尤其 ruby）明显增加；以各次编译的 `.manifest` 为准。
-
-### 默认开启 / 默认关闭
-
-| 项目 | x86_64 | 雅典娜 / 亚瑟 |
+| 分类 | 包名 | 中文名 |
 |---|---|---|
-| 首次开机自动分区（`99-auto-data-partition`） | 开（剩余空间建 ext4 挂 `/opt/data`） | 无 |
-| BBR | 开（`kmod-tcp-bbr` 自带 sysctl） | 未装 |
-| irqbalance | 开（`98-enable-irqbalance`） | 未装 |
-| zram-swap | 开，zstd 压缩（`97-zram-zstd`） | 未装 |
-| chrony 时间同步 | 开，国内服务器，sysntpd 关闭（`99-zz-chrony-ntp`） | 同左（同一个脚本） |
-| FullCone NAT | 开（IPv4） | 开（IPv4） |
-| 流量卸载 | 软件 + 硬件卸载开（x86 实际只有软件卸载生效） | 关（由 NSS ECM 硬件加速） |
-| SMB（Samba 4） | 装好，按需添加共享 | 同左 |
-| Prometheus node exporter | 开，LAN 9100（`96-prometheus-node-exporter`） | 同左（同一个脚本） |
-| OpenClash | 装好，默认关；首次需下载内核并配置订阅 | 同左（亚瑟注意内存） |
-| 默认关闭 | unbound（改到 5334）、https-dns-proxy、conntrackd、snmpd、haproxy、frps / frpc、SoftEther 三个独立服务（`97-x86-service-defaults`）；UPnP；filebrowser；各代理 / 组网插件都要自己配置后才启用 | OpenClash 默认关，需自行配置订阅/内核 |
-
-## 包管理器：apk（不是 opkg）
-
-三个机型都一样：ImmortalWrt master 和 LibWrt 25.12-nss 的 `config/Config-build.in` 里 `CONFIG_USE_APK` 默认就是 `y`，本仓库的配置也没改它，所以固件里是 `apk`，没有 `opkg`。
-
-| 做什么 | 命令 |
-| --- | --- |
-| 更新软件源 | `apk update` |
-| 安装 | `apk add 包名` |
-| 卸载 | `apk del 包名` |
-| 搜索 | `apk search 关键词` |
-| 查看已装 / 包信息 | `apk info` / `apk info 包名` |
-| 升级已装的包 | `apk upgrade` |
-| 装本地 .apk 文件 | `apk add --allow-untrusted ./xxx.apk` |
-
-注意：
-
-- 以前的 `.ipk` 包装不了，第三方插件要找 `.apk` 版本，或者加进配置重新编译固件。
-- LuCI「系统 → 软件包」由 `luci-app-package-manager` 提供（已带中文），可以在网页里搜索、安装、上传 `.apk`。
-- 在线装包要求软件源和固件的内核版本、架构对得上；自己编的固件内核 hash 和官方源不一定一致，`kmod-*` 最好直接编进固件。
-
-## 加插件 / 改配置
-
-`configs/*.config` 是 diffconfig，只写需要的选项。
-
-- 加包：`CONFIG_PACKAGE_包名=y`
-- 本地：对对应上游源码 `make menuconfig` → `./scripts/diffconfig.sh`
-- 预置文件：`files/common/` 给所有机型，`files/<机型>/` 只给对应机型
-- x86_64 额外插件源：`scripts/x86_64-extra-packages.sh`
-- x86_64 内核配置补丁：`scripts/x86_64-kernel-fixups.sh`（由上面的脚本最后调用）。打开 `CONFIG_KERNEL_*` 选项后，如果内核编译卡在 `(NEW) ... [Y/n/?]` 提问，把提示里的选项按 `CONFIG_XXX=y` 或 `# CONFIG_XXX is not set` 加进脚本的 `FIXUPS` 列表；目前补了 `CONFIG_DETECT_HUNG_TASK_BLOCKER=y`（卡死任务检测时顺带打印持有锁的任务）
-- 换上游：改 `.github/workflows/build.yml` 里 matrix 的 `repo_url` / `repo_branch`
-
-## 开启每天自动检查
-
-编辑 `.github/workflows/build.yml`，取消注释：
-
-```yaml
-  schedule:
-    - cron: "0 19 * * *"
-```
-
-UTC 19:00 = 上海时间每天凌晨 3:00。任一上游有新提交（尚无同等上游固件 Release）才会编译；Release 按当天日期命名。
-
-## ⚠️ 首次刷机提醒
-
-原厂系统 **不要** 直接刷本仓库产物。顺序是：开 SSH → 备份原厂分区 → 刷 eMMC U-Boot → 刷匹配 128G 的 GPT → U-Boot 网页刷 `factory.bin`。
-
-已刷 OpenWrt / ImmortalWrt / LibWrt 的机器可用对应 `sysupgrade.bin` 升级。从旧版（ksmbd）升级上来后，SMB 共享要在「服务 → 网络共享」（Samba 4）里重新添加，SMB 密码用 `smbpasswd -a root` 重新设置。
+| 工具 | `bind-dig` | dig DNS 查询 |
+| 系统 / 存储 | `block-mount` | 挂载点管理 |
+| 工具 | `btop` | btop 资源监视 |
+| 系统 / 存储 | `chrony` | Chrony 时间同步 |
+| 工具 | `conntrack` | 连接跟踪工具 |
+| 工具 | `conntrackd` | 连接跟踪同步守护 |
+| 系统 / 存储 | `dnsmasq-full` | 完整版 DNS/DHCP |
+| 工具 | `drill` | drill DNS 查询 |
+| 系统 / 存储 | `e2fsprogs` | ext 文件系统工具 |
+| 工具 | `ethtool-full` | 完整 ethtool |
+| 系统 / 存储 | `f2fs-tools` | F2FS 工具 |
+| 系统 / 存储 | `hdparm` | 硬盘参数 |
+| 工具 | `htop` | htop 进程监视 |
+| 工具 | `iftop` | iftop 实时流量 |
+| 工具 | `iotop` | iotop IO 监视 |
+| 工具 | `iperf3-ssl` | iperf3 测速（SSL） |
+| 内核 / 监控 | `kmod-fs-ext4` | 内核模块：ext4 文件系统 |
+| 内核 / 监控 | `kmod-fs-f2fs` | 内核模块：F2FS 文件系统 |
+| 内核 / 监控 | `kmod-fs-ntfs3` | 内核模块：NTFS3 内核读写驱动 |
+| 内核 / 监控 | `kmod-fs-xfs` | 内核模块：XFS 文件系统 |
+| 内核 / 监控 | `kmod-usb-storage` | 内核模块：USB 存储 |
+| 工具 | `lm-sensors` | 温度传感器 |
+| 系统 / 存储 | `lsblk` | 列出块设备 |
+| 工具 | `lsof` | lsof |
+| 界面 | `luci` | LuCI 网页界面 |
+| LuCI 应用 | `luci-app-banip` | IP 黑名单 |
+| LuCI 应用 | `luci-app-chrony` | Chrony 界面 |
+| LuCI 应用 | `luci-app-cifs-mount` | 挂载远程 SMB/CIFS |
+| LuCI 应用 | `luci-app-diskman` | 磁盘管理 |
+| LuCI 应用 | `luci-app-hd-idle` | 硬盘休眠 |
+| LuCI 应用 | `luci-app-mosdns` | MosDNS 分流 DNS |
+| LuCI 应用 | `luci-app-mwan3` | 多线负载均衡 |
+| LuCI 应用 | `luci-app-natmap` | NATMap 端口映射 |
+| LuCI 应用 | `luci-app-nlbwmon` | 网络带宽监视 |
+| LuCI 应用 | `luci-app-openclash` | OpenClash |
+| LuCI 应用 | `luci-app-pbr` | 策略路由 |
+| LuCI 应用 | `luci-app-samba4` | Samba4 网络共享 |
+| LuCI 应用 | `luci-app-sqm` | SQM 智能队列 |
+| LuCI 应用 | `luci-app-statistics` | 实时统计（collectd） |
+| LuCI 应用 | `luci-app-tailscale` | Tailscale 组网 |
+| LuCI 应用 | `luci-app-upnp` | UPnP / NAT-PMP |
+| LuCI 应用 | `luci-app-watchcat` | 网络看门狗 |
+| LuCI 应用 | `luci-app-wechatpush` | 微信推送 |
+| 界面 | `luci-i18n-banip-zh-cn` | IP 黑名单 · 简体中文 |
+| 界面 | `luci-i18n-base-zh-cn` | LuCI 基础界面 · 简体中文 |
+| 界面 | `luci-i18n-chrony-zh-cn` | Chrony 界面 · 简体中文 |
+| 界面 | `luci-i18n-cifs-mount-zh-cn` | 挂载远程 SMB/CIFS · 简体中文 |
+| 界面 | `luci-i18n-diskman-zh-cn` | 磁盘管理 · 简体中文 |
+| 界面 | `luci-i18n-hd-idle-zh-cn` | 硬盘休眠 · 简体中文 |
+| 界面 | `luci-i18n-mosdns-zh-cn` | MosDNS 分流 DNS · 简体中文 |
+| 界面 | `luci-i18n-mwan3-zh-cn` | 多线负载均衡 · 简体中文 |
+| 界面 | `luci-i18n-natmap-zh-cn` | NATMap 端口映射 · 简体中文 |
+| 界面 | `luci-i18n-nlbwmon-zh-cn` | 网络带宽监视 · 简体中文 |
+| 界面 | `luci-i18n-pbr-zh-cn` | 策略路由 · 简体中文 |
+| 界面 | `luci-i18n-samba4-zh-cn` | Samba4 网络共享 · 简体中文 |
+| 界面 | `luci-i18n-sqm-zh-cn` | SQM 智能队列 · 简体中文 |
+| 界面 | `luci-i18n-statistics-zh-cn` | 实时统计（collectd） · 简体中文 |
+| 界面 | `luci-i18n-tailscale-zh-cn` | Tailscale 组网 · 简体中文 |
+| 界面 | `luci-i18n-upnp-zh-cn` | UPnP / NAT-PMP · 简体中文 |
+| 界面 | `luci-i18n-watchcat-zh-cn` | 网络看门狗 · 简体中文 |
+| 界面 | `luci-i18n-wechatpush-zh-cn` | 微信推送 · 简体中文 |
+| LuCI 应用 | `luci-proto-wireguard` | WireGuard 接口协议 |
+| 系统 / 存储 | `lvm2` | LVM 逻辑卷 |
+| 工具 | `mtr-json` | mtr 路由追踪 |
+| 工具 | `nload` | nload 实时流量 |
+| 系统 / 存储 | `ntfs-3g` | NTFS（FUSE） |
+| 工具 | `openssh-sftp-server` | SFTP 服务端 |
+| 内核 / 监控 | `prometheus-node-exporter-lua` | Prometheus 节点导出（lua） |
+| 内核 / 监控 | `prometheus-node-exporter-lua-nat_traffic` | Prometheus 采集器：NAT 流量 |
+| 内核 / 监控 | `prometheus-node-exporter-lua-netstat` | Prometheus 采集器：网络统计 |
+| 内核 / 监控 | `prometheus-node-exporter-lua-openwrt` | Prometheus 采集器：OpenWrt 系统信息 |
+| 内核 / 监控 | `prometheus-node-exporter-lua-thermal` | Prometheus 采集器：温度 |
+| 内核 / 监控 | `prometheus-node-exporter-lua-uci_dhcp_host` | Prometheus 采集器：DHCP 静态主机 |
+| 内核 / 监控 | `prometheus-node-exporter-lua-wifi` | Prometheus 采集器：Wi-Fi |
+| 内核 / 监控 | `prometheus-node-exporter-lua-wifi_stations` | Prometheus 采集器：Wi-Fi 终端 |
+| 系统 / 存储 | `qrencode` | 二维码生成（WireGuard） |
+| 系统 / 存储 | `resize2fs` | ext 分区扩容 |
+| 工具 | `rsync` | rsync |
+| 工具 | `rsyncd` | rsync 服务端 |
+| 工具 | `screen` | screen 终端复用 |
+| 工具 | `socat` | socat |
+| 工具 | `speedtest-go` | 公网测速 |
+| 工具 | `sysstat` | sysstat（sar/iostat） |
+| 工具 | `tcpdump` | tcpdump 抓包 |
+| 工具 | `tmux` | tmux 终端复用 |
+| 系统 / 存储 | `usbmuxd` | iPhone USB 连接 |
+| 工具 | `usbutils` | lsusb |
+| 工具 | `vim-full` | Vim 完整版 |
+| 系统 / 存储 | `wireguard-tools` | WireGuard 工具 |
+| 系统 / 存储 | `xfs-mkfs` | XFS 格式化 |
